@@ -1,0 +1,1167 @@
+// K.Lorayne Operations — Enterprise CRM & Inventory Server
+import 'dotenv/config';
+import express from 'express';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
+import { shopifyGraphQL, getShopDomain } from './auth.js';
+import {
+  getTickets, getTicketById, createTicket, updateTicket,
+  addTicketNote, deleteTicket,
+  getCustomerNotes, addCustomerNote,
+  getCustomerTags, setCustomerTags,
+  getSavedReplies, addSavedReply, deleteSavedReply,
+  getCategories, getCrmStats,
+  getSettings, updateSettings,
+  logActivity, getActivityLog,
+} from './crm-store.js';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const app = express();
+const PORT = process.env.PORT || 3456;
+const SHOPIFY_API_KEY = process.env.SHOPIFY_CLIENT_ID || '';
+const SHOP_DOMAIN = process.env.SHOPIFY_SHOP ? `${process.env.SHOPIFY_SHOP}.myshopify.com` : '';
+
+// ─── SHOPIFY EMBED HEADERS (allow iframe in Shopify admin) ───
+app.use((req, res, next) => {
+  res.setHeader(
+    'Content-Security-Policy',
+    `frame-ancestors https://admin.shopify.com https://${SHOP_DOMAIN}`
+  );
+  res.removeHeader('X-Frame-Options');
+  next();
+});
+
+app.use(express.static(join(__dirname, '..', 'public')));
+app.use(express.json());
+
+// ─── SHOPIFY GRAPHQL QUERIES ───────────────────
+
+const PRODUCTS_QUERY = `
+  query ($cursor: String) {
+    products(first: 10, after: $cursor, query: "status:active") {
+      pageInfo { hasNextPage endCursor }
+      edges {
+        node {
+          id title handle productType vendor tags status
+          totalInventory tracksInventory createdAt updatedAt
+          variants(first: 100) {
+            edges {
+              node {
+                id title sku price inventoryQuantity
+                inventoryItem {
+                  id tracked
+                  inventoryLevels(first: 5) {
+                    edges {
+                      node {
+                        quantities(names: ["available", "committed", "on_hand"]) {
+                          name quantity
+                        }
+                        location { id name }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+`;
+
+const ORDERS_QUERY = `
+  query ($cursor: String, $dateFilter: String) {
+    orders(first: 100, after: $cursor, query: $dateFilter) {
+      pageInfo { hasNextPage endCursor }
+      edges {
+        node {
+          id name createdAt
+          displayFinancialStatus displayFulfillmentStatus
+          cancelledAt cancelReason
+          totalPriceSet { shopMoney { amount currencyCode } }
+          subtotalPriceSet { shopMoney { amount } }
+          totalShippingPriceSet { shopMoney { amount } }
+          totalRefundedSet { shopMoney { amount } }
+          customer { id displayName email phone }
+          shippingAddress { city province country }
+          lineItems(first: 100) {
+            edges {
+              node { sku quantity title variant { id } }
+            }
+          }
+        }
+      }
+    }
+  }
+`;
+
+const CUSTOMERS_QUERY = `
+  query ($cursor: String) {
+    customers(first: 250, after: $cursor) {
+      pageInfo { hasNextPage endCursor }
+      edges {
+        node {
+          id displayName email phone
+          numberOfOrders
+          amountSpent { amount currencyCode }
+          createdAt updatedAt
+          tags
+          defaultAddress { city province country }
+          lastOrder { id createdAt }
+        }
+      }
+    }
+  }
+`;
+
+// ─── BULK OPERATIONS (FAST FETCH FOR LARGE DATASETS) ───
+
+const BULK_CUSTOMERS_MUTATION = `
+  mutation {
+    bulkOperationRunQuery(
+      query: """
+      {
+        customers {
+          edges {
+            node {
+              id
+              displayName
+              email
+              phone
+              numberOfOrders
+              amountSpent { amount currencyCode }
+              createdAt
+              updatedAt
+              tags
+              defaultAddress { city province country }
+              lastOrder { id createdAt }
+            }
+          }
+        }
+      }
+      """
+    ) {
+      bulkOperation { id status }
+      userErrors { field message }
+    }
+  }
+`;
+
+const BULK_POLL_QUERY = `{ currentBulkOperation { id status errorCode objectCount fileSize url } }`;
+
+async function fetchCustomersBulk() {
+  // Cancel any lingering bulk operation (ignore errors — may not exist)
+  try {
+    const poll = await shopifyGraphQL(BULK_POLL_QUERY);
+    const existing = poll.data?.currentBulkOperation;
+    if (existing && (existing.status === 'RUNNING' || existing.status === 'CREATED')) {
+      console.log(`[bulk] Cancelling existing operation ${existing.id}...`);
+      await shopifyGraphQL(`mutation { bulkOperationCancel(id: "${existing.id}") { bulkOperation { id status } userErrors { field message } } }`);
+      await new Promise(r => setTimeout(r, 2000));
+    }
+  } catch (_) { /* no-op */ }
+
+  // Step 1: Start bulk operation
+  console.log('[bulk] Starting bulk customer fetch...');
+  const start = await shopifyGraphQL(BULK_CUSTOMERS_MUTATION);
+  const errs = start.data?.bulkOperationRunQuery?.userErrors;
+  if (errs?.length) throw new Error('Bulk start failed: ' + errs.map(e => e.message).join(', '));
+  console.log('[bulk] Operation submitted, waiting for Shopify to process...');
+
+  // Step 2: Poll for completion
+  let fileUrl = null;
+  const t0 = Date.now();
+  while (true) {
+    await new Promise(r => setTimeout(r, 2000));
+    const poll = await shopifyGraphQL(BULK_POLL_QUERY);
+    const op = poll.data?.currentBulkOperation;
+    if (!op) throw new Error('Bulk operation disappeared');
+
+    fetchStatus.customerCount = op.objectCount || fetchStatus.customerCount;
+    const elapsed = ((Date.now() - t0) / 1000).toFixed(0);
+
+    if (op.status === 'COMPLETED') {
+      fileUrl = op.url;
+      console.log(`[bulk] Completed in ${elapsed}s — ${op.objectCount} objects, ${(op.fileSize / 1048576).toFixed(1)} MB`);
+      break;
+    } else if (op.status === 'FAILED' || op.status === 'CANCELED') {
+      throw new Error(`Bulk operation ${op.status}: ${op.errorCode || 'unknown'}`);
+    }
+    if (parseInt(elapsed) % 10 === 0) console.log(`[bulk] ${op.status}... ${op.objectCount || 0} objects (${elapsed}s)`);
+  }
+
+  if (!fileUrl) { console.log('[bulk] No file URL — 0 customers'); return []; }
+
+  // Step 3: Download JSONL and parse
+  console.log('[bulk] Downloading results file...');
+  const resp = await fetch(fileUrl);
+  const text = await resp.text();
+
+  const customers = [];
+  for (const line of text.split('\n')) {
+    if (!line.trim()) continue;
+    try {
+      const obj = JSON.parse(line);
+      if (!obj.__parentId) customers.push(obj); // skip child connection rows
+    } catch (_) { /* skip malformed lines */ }
+  }
+
+  console.log(`[bulk] Parsed ${customers.length} customers from JSONL`);
+  fetchStatus.customerCount = customers.length;
+  return customers;
+}
+
+// ─── PAGINATED FETCH ───────────────────────────
+
+async function fetchAllPaginated(query, key, vars = {}, maxItems = Infinity) {
+  let all = [];
+  let cursor = null;
+  let page = 0;
+  while (true) {
+    page++;
+    let result;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        result = await shopifyGraphQL(query, { ...vars, cursor });
+        break;
+      } catch (err) {
+        console.error(`[fetch] ${key} page ${page} attempt ${attempt} error:`, err.message);
+        if (attempt === 3) throw err;
+        await new Promise(r => setTimeout(r, 2000 * attempt));
+      }
+    }
+    if (!result?.data?.[key]) {
+      if (result?.errors) console.error(`[fetch] ${key} page ${page} GraphQL errors:`, JSON.stringify(result.errors));
+      else console.log(`[fetch] ${key} page ${page}: no data (done or failed)`);
+      break;
+    }
+    const items = result.data[key].edges.map(e => e.node);
+    all = all.concat(items);
+    console.log(`[fetch] ${key} page ${page}: got ${items.length} (total: ${all.length})`);
+    if (key === 'customers') fetchStatus.customerCount = all.length;
+    if (all.length >= maxItems) {
+      console.log(`[fetch] ${key}: reached max ${maxItems}, stopping`);
+      break;
+    }
+    if (result.data[key].pageInfo.hasNextPage) {
+      cursor = result.data[key].pageInfo.endCursor;
+    } else break;
+  }
+  return all;
+}
+
+// ─── INVENTORY ANALYSIS ────────────────────────
+
+function analyzeInventory(products, orders, config = {}) {
+  const leadTime = config.leadTimeDays || 14;
+  const safetyDays = config.safetyStockDays || 7;
+  const orderCycleDays = config.orderCycleDays || 30;
+
+  const skuSales = {};
+  const orderDates = orders.map(o => new Date(o.createdAt));
+  const now = new Date();
+  const oldest = orderDates.length > 0 ? new Date(Math.min(...orderDates)) : now;
+  const daysCovered = Math.max(1, Math.ceil((now - oldest) / 86400000));
+
+  for (const order of orders) {
+    for (const li of order.lineItems.edges) {
+      const sku = li.node.sku || '';
+      if (!sku) continue;
+      skuSales[sku] = (skuSales[sku] || 0) + li.node.quantity;
+    }
+  }
+
+  const variants = [];
+  for (const product of products) {
+    for (const ve of product.variants.edges) {
+      const v = ve.node;
+      const sku = v.sku || '';
+      if (!v.inventoryItem?.tracked) continue;
+
+      const levels = v.inventoryItem.inventoryLevels?.edges?.map(e => e.node) || [];
+      const available = levels.reduce((s, l) => {
+        const q = l.quantities?.find(q => q.name === 'available');
+        return s + (q?.quantity || 0);
+      }, 0);
+      const committed = levels.reduce((s, l) => {
+        const q = l.quantities?.find(q => q.name === 'committed');
+        return s + (q?.quantity || 0);
+      }, 0);
+      const onHand = levels.reduce((s, l) => {
+        const q = l.quantities?.find(q => q.name === 'on_hand');
+        return s + (q?.quantity || 0);
+      }, 0);
+
+      const unitsSold = skuSales[sku] || 0;
+      const dailyVelocity = unitsSold / daysCovered;
+      const monthlyVelocity = dailyVelocity * 30;
+      const daysOfStock = dailyVelocity > 0 ? Math.round(available / dailyVelocity) : (available > 0 ? 999 : 0);
+      const reorderPoint = Math.ceil(dailyVelocity * (leadTime + safetyDays));
+      const suggestedQty = Math.max(1, Math.ceil(dailyVelocity * orderCycleDays));
+      const needsReorder = dailyVelocity > 0 && available <= reorderPoint;
+
+      let priority = 'OK';
+      if (available <= 0 && unitsSold > 0) priority = 'CRITICAL';
+      else if (needsReorder && daysOfStock < leadTime) priority = 'URGENT';
+      else if (needsReorder) priority = 'REORDER';
+      else if (daysOfStock < 21 && dailyVelocity > 0) priority = 'WATCH';
+
+      let velocityClass = 'NO SALES';
+      if (monthlyVelocity >= 20) velocityClass = 'FAST MOVER';
+      else if (monthlyVelocity >= 5) velocityClass = 'REGULAR';
+      else if (monthlyVelocity > 0) velocityClass = 'SLOW MOVER';
+
+      variants.push({
+        sku, product: product.title, variant: v.title,
+        productType: product.productType || '', vendor: product.vendor || '',
+        price: parseFloat(v.price), available, committed, onHand,
+        unitsSold, dailyVelocity, monthlyVelocity: Math.round(monthlyVelocity),
+        daysOfStock, reorderPoint, suggestedQty, needsReorder, priority, velocityClass,
+      });
+    }
+  }
+
+  return { variants, skuSales, daysCovered, totalOrders: orders.length };
+}
+
+// ─── CACHE ─────────────────────────────────────
+
+let cache = { products: null, orders: null, customers: null, lastFetch: 0 };
+let fetchStatus = { state: 'idle', products: false, orders: false, customers: false, customerCount: 0, error: null };
+const CACHE_TTL = 5 * 60 * 1000;
+
+// ─── DISK CACHE FOR INSTANT CUSTOMER LOADING ───
+
+const DATA_DIR = join(__dirname, '..', 'data');
+const CUSTOMER_CACHE_FILE = join(DATA_DIR, 'customers-cache.json');
+
+function loadCustomerCache() {
+  try {
+    if (existsSync(CUSTOMER_CACHE_FILE)) {
+      const raw = readFileSync(CUSTOMER_CACHE_FILE, 'utf-8');
+      const data = JSON.parse(raw);
+      if (data.customers?.length > 0 && data.timestamp) {
+        console.log(`[cache] Loaded ${data.customers.length} customers from disk (saved ${new Date(data.timestamp).toLocaleString()})`);
+        return data;
+      }
+    }
+  } catch (err) {
+    console.error('[cache] Failed to read disk cache:', err.message);
+  }
+  return null;
+}
+
+function saveCustomerCache(customers) {
+  try {
+    if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
+    writeFileSync(CUSTOMER_CACHE_FILE, JSON.stringify({ customers, timestamp: new Date().toISOString() }));
+    console.log(`[cache] Saved ${customers.length} customers to disk`);
+  } catch (err) {
+    console.error('[cache] Failed to write disk cache:', err.message);
+  }
+}
+
+async function getData(forceRefresh = false) {
+  if (!forceRefresh && cache.products && (Date.now() - cache.lastFetch < CACHE_TTL)) {
+    return cache;
+  }
+  console.log('[server] Fetching fresh data from Shopify...');
+  fetchStatus = { state: 'fetching', products: false, orders: false, customers: false, customerCount: 0, error: null };
+  const sinceDate = new Date(Date.now() - 90 * 86400000).toISOString().split('T')[0];
+
+  // Phase 1: Fetch products and orders (fast)
+  const [products, orders] = await Promise.all([
+    fetchAllPaginated(PRODUCTS_QUERY, 'products'),
+    fetchAllPaginated(ORDERS_QUERY, 'orders', { dateFilter: `created_at:>=${sinceDate}` }),
+  ]);
+  fetchStatus.products = true;
+  fetchStatus.orders = true;
+  cache = { products, orders, customers: cache.customers || [], lastFetch: Date.now() };
+  console.log(`[server] Phase 1 done: ${products.length} products, ${orders.length} orders`);
+
+  // Phase 2: Load customers — try instant disk cache first, then refresh in background
+  const diskData = loadCustomerCache();
+  if (diskData && !forceRefresh) {
+    // Instant load from disk — dashboard is ready in seconds
+    cache = { products, orders, customers: diskData.customers, lastFetch: Date.now() };
+    fetchStatus.customers = true;
+    fetchStatus.customerCount = diskData.customers.length;
+    fetchStatus.state = 'ready';
+    console.log(`[server] Phase 2 INSTANT: ${diskData.customers.length} customers from disk cache`);
+    autoSeedTickets(orders, diskData.customers);
+
+    // Background refresh — fetch fresh data without blocking the UI
+    refreshCustomersInBackground(products, orders, diskData.timestamp).catch(err => {
+      console.error('[server] Background customer refresh failed:', err.message);
+    });
+    return cache;
+  }
+
+  // No disk cache — full bulk fetch (first run only)
+  console.log('[server] No disk cache found — running full bulk customer fetch...');
+  try {
+    const customers = await fetchCustomersBulk();
+    fetchStatus.customers = true;
+    fetchStatus.customerCount = customers.length;
+    cache = { products, orders, customers, lastFetch: Date.now() };
+    console.log(`[server] Phase 2 done: ${customers.length} customers`);
+    saveCustomerCache(customers);
+    autoSeedTickets(orders, customers);
+  } catch (err) {
+    console.error('[server] Bulk customer fetch failed, falling back to pagination...', err.message);
+    try {
+      const customers = await fetchAllPaginated(CUSTOMERS_QUERY, 'customers');
+      fetchStatus.customers = true;
+      fetchStatus.customerCount = customers.length;
+      cache = { products, orders, customers, lastFetch: Date.now() };
+      console.log(`[server] Phase 2 (fallback) done: ${customers.length} customers`);
+      saveCustomerCache(customers);
+      autoSeedTickets(orders, customers);
+    } catch (err2) {
+      console.error('[server] Customer fetch failed entirely:', err2.message);
+      fetchStatus.error = 'Customer fetch failed: ' + err2.message;
+    }
+  }
+
+  fetchStatus.state = 'ready';
+  return cache;
+}
+
+// ─── BACKGROUND INCREMENTAL CUSTOMER REFRESH ───
+
+async function refreshCustomersInBackground(products, orders, lastTimestamp) {
+  const cacheAge = (Date.now() - new Date(lastTimestamp).getTime()) / 60000;
+  console.log(`[bg-refresh] Disk cache is ${cacheAge.toFixed(0)} minutes old — starting incremental update...`);
+
+  // If cache is less than 5 minutes old, skip refresh entirely
+  if (cacheAge < 5) {
+    console.log('[bg-refresh] Cache is fresh, skipping refresh');
+    return;
+  }
+
+  // If cache is less than 24 hours old, try incremental update via paginated query with updated_at filter
+  // (Faster than a full bulk operation for small numbers of changes)
+  if (cacheAge < 1440) {
+    try {
+      const sinceStr = new Date(new Date(lastTimestamp).getTime() - 60000).toISOString(); // 1 min buffer
+      console.log(`[bg-refresh] Fetching customers updated since ${sinceStr}...`);
+
+      const updatedCustomers = await fetchAllPaginated(CUSTOMERS_QUERY, 'customers', { dateFilter: `updated_at:>=${sinceStr}` });
+      console.log(`[bg-refresh] Found ${updatedCustomers.length} updated customers`);
+
+      if (updatedCustomers.length > 0) {
+        // Merge into existing customer list
+        const existingMap = new Map(cache.customers.map(c => [c.id, c]));
+        for (const c of updatedCustomers) {
+          existingMap.set(c.id, c); // overwrite existing or add new
+        }
+        const mergedCustomers = Array.from(existingMap.values());
+
+        cache = { products: cache.products, orders: cache.orders, customers: mergedCustomers, lastFetch: Date.now() };
+        fetchStatus.customerCount = mergedCustomers.length;
+        saveCustomerCache(mergedCustomers);
+        console.log(`[bg-refresh] Incremental merge complete — ${mergedCustomers.length} total customers`);
+      } else {
+        // No changes, just update the cache timestamp
+        saveCustomerCache(cache.customers);
+      }
+      return;
+    } catch (err) {
+      console.error('[bg-refresh] Incremental update failed, will do full refresh:', err.message);
+    }
+  }
+
+  // Cache is old (24h+) or incremental failed — do a full bulk refresh in background
+  console.log('[bg-refresh] Running full bulk refresh...');
+  try {
+    const customers = await fetchCustomersBulk();
+    cache = { products: cache.products, orders: cache.orders, customers, lastFetch: Date.now() };
+    fetchStatus.customerCount = customers.length;
+    saveCustomerCache(customers);
+    autoSeedTickets(orders, customers);
+    console.log(`[bg-refresh] Full refresh complete — ${customers.length} customers`);
+  } catch (err) {
+    console.error('[bg-refresh] Full refresh failed:', err.message);
+  }
+}
+
+// ─── AUTO-SEED TICKETS FROM ORDERS ─────────────
+
+function autoSeedTickets(orders, customers) {
+  const existing = getTickets({});
+  const existingOrderIds = new Set(existing.map(t => t.orderId).filter(Boolean));
+
+  let seeded = 0;
+  for (const order of orders) {
+    if (existingOrderIds.has(order.id)) continue;
+
+    const custName = order.customer?.displayName || 'Unknown';
+    const custEmail = order.customer?.email || '';
+    const custId = order.customer?.id || null;
+    const orderTotal = order.totalPriceSet?.shopMoney?.amount || '0';
+
+    // Cancelled orders
+    if (order.cancelledAt) {
+      createTicket({
+        customerId: custId, customerName: custName, customerEmail: custEmail,
+        category: 'returns', priority: 'medium', orderId: order.id, orderName: order.name,
+        subject: `Cancelled Order ${order.name}`,
+        description: `Order ${order.name} was cancelled. Reason: ${order.cancelReason || 'Not specified'}. Total: $${orderTotal}\n\nCustomer may need follow-up regarding refund or exchange.`,
+      });
+      seeded++;
+      continue;
+    }
+
+    // Refunded orders
+    const refunded = parseFloat(order.totalRefundedSet?.shopMoney?.amount || 0);
+    if (refunded > 0) {
+      createTicket({
+        customerId: custId, customerName: custName, customerEmail: custEmail,
+        category: 'returns', priority: 'medium', orderId: order.id, orderName: order.name,
+        subject: `Refund on Order ${order.name} — $${refunded.toFixed(2)}`,
+        description: `A refund of $${refunded.toFixed(2)} was processed on order ${order.name} (total: $${orderTotal}).\n\nCheck if customer satisfaction follow-up is needed.`,
+      });
+      seeded++;
+      continue;
+    }
+
+    // Old unfulfilled orders (paid but not fulfilled for 7+ days)
+    if (order.displayFinancialStatus === 'PAID' &&
+        order.displayFulfillmentStatus === 'UNFULFILLED') {
+      const daysSinceOrder = (Date.now() - new Date(order.createdAt)) / 86400000;
+      if (daysSinceOrder > 7) {
+        createTicket({
+          customerId: custId, customerName: custName, customerEmail: custEmail,
+          category: 'shipping', priority: daysSinceOrder > 14 ? 'high' : 'medium',
+          orderId: order.id, orderName: order.name,
+          subject: `Unfulfilled Order ${order.name} — ${Math.round(daysSinceOrder)} days`,
+          description: `Order ${order.name} has been paid but unfulfilled for ${Math.round(daysSinceOrder)} days.\nTotal: $${orderTotal}\n\nCustomer: ${custName} (${custEmail})`,
+        });
+        seeded++;
+      }
+    }
+  }
+
+  if (seeded > 0) {
+    console.log(`[server] Auto-seeded ${seeded} tickets from order issues`);
+    logActivity('system', 'auto_seed', `Auto-created ${seeded} tickets from order issues`);
+  }
+}
+
+// ─── CUSTOMER ENRICHMENT ───────────────────────
+
+function enrichCustomers(customers, orders) {
+  const orderMap = {};
+  for (const order of orders) {
+    const email = order.customer?.email;
+    if (!email) continue;
+    if (!orderMap[email]) orderMap[email] = { count: 0, revenue: 0 };
+    orderMap[email].count++;
+    orderMap[email].revenue += parseFloat(order.totalPriceSet?.shopMoney?.amount || 0);
+  }
+
+  return customers.map(c => {
+    const od = orderMap[c.email] || { count: 0, revenue: 0 };
+    const totalSpent = parseFloat(c.amountSpent?.amount || 0);
+    const numOrders = parseInt(c.numberOfOrders || 0);
+
+    let tier = 'NEW';
+    if (totalSpent >= 500 || numOrders >= 10) tier = 'VIP';
+    else if (totalSpent >= 200 || numOrders >= 5) tier = 'LOYAL';
+    else if (numOrders >= 2) tier = 'REPEAT';
+    else if (numOrders >= 1) tier = 'CUSTOMER';
+
+    // Use Shopify's lastOrder for risk detection (not limited to 90-day window)
+    let riskLevel = 'none';
+    const lastOrderDate = c.lastOrder?.createdAt ? new Date(c.lastOrder.createdAt) : null;
+    if (numOrders >= 2 && lastOrderDate) {
+      const daysSince = (Date.now() - lastOrderDate) / 86400000;
+      if (daysSince > 120) riskLevel = 'high';
+      else if (daysSince > 60) riskLevel = 'medium';
+    }
+
+    const avgOrderValue = numOrders > 0 ? totalSpent / numOrders : 0;
+
+    return {
+      id: c.id, name: c.displayName, email: c.email, phone: c.phone,
+      totalOrders: numOrders, totalSpent: totalSpent.toFixed(2),
+      avgOrderValue: avgOrderValue.toFixed(2),
+      recentOrders90d: od.count, recentRevenue90d: od.revenue.toFixed(2),
+      lastOrder: lastOrderDate, tier, riskLevel,
+      tags: c.tags || [], customTags: getCustomerTags(c.id),
+      location: c.defaultAddress ? `${c.defaultAddress.city || ''}, ${c.defaultAddress.province || ''}`.replace(/^, |, $/g, '') : '',
+      createdAt: c.createdAt, updatedAt: c.updatedAt,
+    };
+  }).sort((a, b) => parseFloat(b.totalSpent) - parseFloat(a.totalSpent));
+}
+
+// ═══════════════════════════════════════════════
+//  API ROUTES
+// ═══════════════════════════════════════════════
+
+// ─── APP CONFIG (for Shopify App Bridge) ───────
+
+app.get('/api/app-config', (req, res) => {
+  res.json({ apiKey: SHOPIFY_API_KEY, shop: SHOP_DOMAIN });
+});
+
+// ─── STATUS (for loading indicator) ────────────
+
+app.get('/api/status', (req, res) => {
+  res.json({
+    state: fetchStatus.state,
+    products: fetchStatus.products,
+    orders: fetchStatus.orders,
+    customers: fetchStatus.customers,
+    productCount: cache.products?.length || 0,
+    orderCount: cache.orders?.length || 0,
+    customerCount: fetchStatus.customerCount || cache.customers?.length || 0,
+    error: fetchStatus.error,
+  });
+});
+
+// ─── GLOSSARY / LABEL INFO ─────────────────────
+
+app.get('/api/glossary', (req, res) => {
+  res.json({
+    tiers: {
+      VIP: { label: 'VIP', color: 'var(--accent)', description: 'Spent $500+ or placed 10+ orders. Your most valuable customers who drive the majority of revenue.' },
+      LOYAL: { label: 'Loyal', color: 'var(--green)', description: 'Spent $200+ or placed 5+ orders. Consistent repeat buyers with strong brand affinity.' },
+      REPEAT: { label: 'Repeat', color: 'var(--blue)', description: 'Placed 2+ orders. Customers who came back after their first purchase.' },
+      CUSTOMER: { label: '1-Time', color: 'var(--text-dim)', description: 'Placed exactly 1 order. Potential to convert into repeat buyers with the right follow-up.' },
+      NEW: { label: 'New', color: 'var(--text-muted)', description: 'Account created but no orders yet. May have signed up for newsletter or created account at checkout.' },
+    },
+    risk: {
+      high: { label: 'At Risk', description: "Repeat customer who hasn't ordered in 120+ days. High chance of churning \u2014 consider a win-back email or discount." },
+      medium: { label: 'Monitor', description: "Repeat customer who hasn't ordered in 60-120 days. Activity is slowing \u2014 may need re-engagement." },
+      none: { label: 'Active', description: 'Customer is active or single-purchaser (no churn risk calculated).' },
+    },
+    velocity: {
+      'FAST MOVER': { label: 'Fast Mover', description: 'Selling 20+ units/month. High demand \u2014 keep generous safety stock and reorder frequently.' },
+      'REGULAR': { label: 'Regular', description: 'Selling 5-19 units/month. Steady seller \u2014 standard reorder cycle works well.' },
+      'SLOW MOVER': { label: 'Slow Mover', description: 'Selling 1-4 units/month. Low demand \u2014 keep minimal stock, consider bundling or promotions.' },
+      'NO SALES': { label: 'No Sales', description: 'Zero sales in the reporting period. May be new listing, seasonal item, or dead stock to consider marking down.' },
+    },
+    priority: {
+      CRITICAL: { label: 'Critical', description: 'Out of stock on items that have proven sales. Losing revenue every day \u2014 order immediately.' },
+      URGENT: { label: 'Urgent', description: "Stock will run out before the next delivery arrives based on lead time. Add to this week's purchase order." },
+      REORDER: { label: 'Reorder', description: 'Stock has fallen below the calculated safety level (lead time + buffer days). Time to place a standard reorder.' },
+      WATCH: { label: 'Watch', description: 'Less than 21 days of stock remaining. Not urgent yet, but keep an eye on it for the next order cycle.' },
+      OK: { label: 'OK', description: 'Stock levels are healthy. No action needed right now.' },
+    },
+    ticketStatus: {
+      open: { label: 'Open', description: "New ticket that hasn't been addressed yet. Needs first response." },
+      in_progress: { label: 'In Progress', description: 'Being actively worked on by the team.' },
+      waiting: { label: 'Waiting', description: 'Waiting on response from customer or external party.' },
+      resolved: { label: 'Resolved', description: 'Issue has been fixed. Waiting for confirmation period before closing.' },
+      closed: { label: 'Closed', description: 'Fully resolved and archived.' },
+    },
+    ticketPriority: {
+      urgent: { label: 'Urgent', description: 'Needs immediate attention \u2014 customer is at risk of churning or issue is escalated.' },
+      high: { label: 'High', description: 'Important issue, should be handled within a few hours.' },
+      medium: { label: 'Medium', description: 'Standard priority \u2014 handle within the SLA window (default 24h).' },
+      low: { label: 'Low', description: 'Non-urgent \u2014 can be handled when convenient.' },
+    },
+  });
+});
+
+// ─── DASHBOARD ─────────────────────────────────
+
+app.get('/api/dashboard', async (req, res) => {
+  try {
+    const { products, orders, customers } = await getData();
+    const analysis = analyzeInventory(products, orders);
+    const enriched = enrichCustomers(customers, orders);
+    const crmStats = getCrmStats();
+
+    const critical = analysis.variants.filter(v => v.priority === 'CRITICAL');
+    const urgent = analysis.variants.filter(v => v.priority === 'URGENT');
+    const reorder = analysis.variants.filter(v => v.priority === 'REORDER');
+    const totalValue = analysis.variants.reduce((s, v) => s + (v.available * v.price), 0);
+    const totalUnits = analysis.variants.reduce((s, v) => s + v.available, 0);
+    const revenue = orders.reduce((s, o) => s + parseFloat(o.totalPriceSet?.shopMoney?.amount || 0), 0);
+
+    const velocityCounts = { 'FAST MOVER': 0, 'REGULAR': 0, 'SLOW MOVER': 0, 'NO SALES': 0 };
+    analysis.variants.forEach(v => velocityCounts[v.velocityClass]++);
+
+    const tierCounts = { VIP: 0, LOYAL: 0, REPEAT: 0, CUSTOMER: 0, NEW: 0 };
+    enriched.forEach(c => tierCounts[c.tier]++);
+
+    // Revenue trend (last 30 days)
+    const revByDay = {};
+    for (let i = 29; i >= 0; i--) {
+      const d = new Date(Date.now() - i * 86400000).toISOString().split('T')[0];
+      revByDay[d] = 0;
+    }
+    orders.forEach(o => {
+      const d = o.createdAt.split('T')[0];
+      if (revByDay[d] !== undefined) revByDay[d] += parseFloat(o.totalPriceSet?.shopMoney?.amount || 0);
+    });
+
+    // Recent orders
+    const recentOrders = [...orders]
+      .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
+      .slice(0, 8)
+      .map(o => ({
+        id: o.id, name: o.name, createdAt: o.createdAt,
+        customer: o.customer?.displayName || 'Guest',
+        total: o.totalPriceSet?.shopMoney?.amount,
+        financial: o.displayFinancialStatus,
+        fulfillment: o.displayFulfillmentStatus,
+      }));
+
+    const activity = getActivityLog(8);
+    const topCustomers = enriched.slice(0, 5).map(c => ({
+      id: c.id, name: c.name, email: c.email, tier: c.tier,
+      totalSpent: c.totalSpent, totalOrders: c.totalOrders,
+    }));
+
+    res.json({
+      store: getShopDomain(),
+      products: products.length,
+      totalVariants: analysis.variants.length,
+      totalOrders: orders.length,
+      totalCustomers: customers.length,
+      daysCovered: analysis.daysCovered, revenue: revenue.toFixed(2),
+      totalInventoryValue: totalValue.toFixed(2),
+      totalUnitsOnHand: totalUnits,
+      alerts: { critical: critical.length, urgent: urgent.length, reorder: reorder.length },
+      velocityCounts, tierCounts, revByDay, recentOrders, topCustomers, activity,
+      crm: {
+        total: crmStats.total, active: crmStats.active,
+        avgResponseHrs: crmStats.avgResponseHrs, slaCompliance: crmStats.slaCompliance,
+        thisWeek: crmStats.thisWeek, resolvedThisWeek: crmStats.resolvedThisWeek,
+      },
+      topIssues: critical.concat(urgent).slice(0, 8).map(v => ({
+        product: v.product, variant: v.variant, sku: v.sku,
+        available: v.available, monthlyVelocity: v.monthlyVelocity,
+        priority: v.priority, daysOfStock: v.daysOfStock,
+      })),
+    });
+  } catch (err) {
+    console.error('[dashboard]', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─── INVENTORY ─────────────────────────────────
+
+app.get('/api/inventory', async (req, res) => {
+  try {
+    const { products, orders } = await getData();
+    const analysis = analyzeInventory(products, orders);
+    res.json({ variants: analysis.variants, daysCovered: analysis.daysCovered, totalOrders: analysis.totalOrders });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ─── REPLENISHMENT ─────────────────────────────
+
+app.get('/api/replenishment', async (req, res) => {
+  try {
+    const { products, orders } = await getData();
+    const analysis = analyzeInventory(products, orders);
+    const needsAction = analysis.variants.filter(v => v.priority !== 'OK');
+    const byVendor = {};
+    for (const item of needsAction) {
+      const vendor = item.vendor || 'Unknown';
+      if (!byVendor[vendor]) byVendor[vendor] = [];
+      byVendor[vendor].push(item);
+    }
+    res.json({
+      items: needsAction, byVendor,
+      summary: {
+        critical: needsAction.filter(i => i.priority === 'CRITICAL').length,
+        urgent: needsAction.filter(i => i.priority === 'URGENT').length,
+        reorder: needsAction.filter(i => i.priority === 'REORDER').length,
+        watch: needsAction.filter(i => i.priority === 'WATCH').length,
+        totalUnitsToOrder: needsAction.filter(i => ['CRITICAL','URGENT','REORDER'].includes(i.priority))
+          .reduce((s, i) => s + i.suggestedQty, 0),
+      },
+    });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ─── ALERTS ────────────────────────────────────
+
+app.get('/api/alerts', async (req, res) => {
+  try {
+    const { products, orders } = await getData();
+    const analysis = analyzeInventory(products, orders);
+    const alerts = analysis.variants.filter(v => v.priority !== 'OK')
+      .sort((a, b) => {
+        const order = { CRITICAL: 0, URGENT: 1, REORDER: 2, WATCH: 3 };
+        return (order[a.priority] || 9) - (order[b.priority] || 9);
+      });
+    res.json({ alerts, total: alerts.length });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ─── ORDERS ────────────────────────────────────
+
+app.get('/api/orders', async (req, res) => {
+  try {
+    const { orders } = await getData();
+    const { search, financial, fulfillment } = req.query;
+
+    let filtered = orders.map(o => ({
+      id: o.id, name: o.name, createdAt: o.createdAt,
+      financial: o.displayFinancialStatus,
+      fulfillment: o.displayFulfillmentStatus,
+      cancelled: !!o.cancelledAt,
+      total: o.totalPriceSet?.shopMoney?.amount || '0',
+      refunded: o.totalRefundedSet?.shopMoney?.amount || '0',
+      customer: o.customer?.displayName || 'Guest',
+      customerEmail: o.customer?.email || '',
+      customerId: o.customer?.id || null,
+      shippingCity: o.shippingAddress?.city || '',
+      shippingProvince: o.shippingAddress?.province || '',
+      itemCount: o.lineItems.edges.reduce((s, li) => s + li.node.quantity, 0),
+      items: o.lineItems.edges.map(li => ({
+        title: li.node.title, quantity: li.node.quantity, sku: li.node.sku,
+      })),
+    }));
+
+    if (search) {
+      const s = search.toLowerCase();
+      filtered = filtered.filter(o =>
+        o.name.toLowerCase().includes(s) || o.customer.toLowerCase().includes(s) ||
+        o.customerEmail.toLowerCase().includes(s)
+      );
+    }
+    if (financial) filtered = filtered.filter(o => o.financial === financial);
+    if (fulfillment) filtered = filtered.filter(o => o.fulfillment === fulfillment);
+
+    filtered.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+
+    const totalRevenue = filtered.reduce((s, o) => s + parseFloat(o.total), 0);
+    const totalRefunds = filtered.reduce((s, o) => s + parseFloat(o.refunded), 0);
+    const avgOrderValue = filtered.length > 0 ? totalRevenue / filtered.length : 0;
+
+    const financialBreakdown = {};
+    const fulfillmentBreakdown = {};
+    filtered.forEach(o => {
+      financialBreakdown[o.financial] = (financialBreakdown[o.financial] || 0) + 1;
+      fulfillmentBreakdown[o.fulfillment || 'PENDING'] = (fulfillmentBreakdown[o.fulfillment || 'PENDING'] || 0) + 1;
+    });
+
+    res.json({
+      orders: filtered, total: filtered.length,
+      totalRevenue: totalRevenue.toFixed(2),
+      totalRefunds: totalRefunds.toFixed(2),
+      avgOrderValue: avgOrderValue.toFixed(2),
+      financialBreakdown, fulfillmentBreakdown,
+    });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ─── CUSTOMERS ─────────────────────────────────
+
+app.get('/api/customers', async (req, res) => {
+  try {
+    const { customers, orders } = await getData();
+    const enriched = enrichCustomers(customers, orders);
+
+    // Tier counts (before filtering)
+    const tierCounts = { VIP: 0, LOYAL: 0, REPEAT: 0, CUSTOMER: 0, NEW: 0 };
+    enriched.forEach(c => tierCounts[c.tier]++);
+    const atRisk = enriched.filter(c => c.riskLevel !== 'none').length;
+
+    // Filtering
+    let filtered = enriched;
+    const { tier, risk, search, sort, page, limit: lim } = req.query;
+    if (tier && tier !== 'all') filtered = filtered.filter(c => c.tier === tier);
+    if (risk === 'at-risk') filtered = filtered.filter(c => c.riskLevel !== 'none');
+    if (search) {
+      const q = search.toLowerCase();
+      filtered = filtered.filter(c =>
+        (c.name || '').toLowerCase().includes(q) ||
+        (c.email || '').toLowerCase().includes(q) ||
+        (c.phone || '').includes(q)
+      );
+    }
+
+    // Sorting
+    if (sort === 'orders') filtered.sort((a, b) => b.totalOrders - a.totalOrders);
+    else if (sort === 'recent') filtered.sort((a, b) => new Date(b.lastOrder || 0) - new Date(a.lastOrder || 0));
+    else if (sort === 'name') filtered.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+    // default: sorted by totalSpent (already from enrichCustomers)
+
+    // Pagination
+    const pageNum = Math.max(1, parseInt(page) || 1);
+    const pageSize = Math.min(200, Math.max(10, parseInt(lim) || 50));
+    const totalFiltered = filtered.length;
+    const paged = filtered.slice((pageNum - 1) * pageSize, pageNum * pageSize);
+
+    res.json({
+      customers: paged, tierCounts, total: enriched.length,
+      totalFiltered, atRisk, page: pageNum, pageSize,
+      totalPages: Math.ceil(totalFiltered / pageSize),
+    });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/customers/:shopifyId', async (req, res) => {
+  try {
+    const { customers, orders } = await getData();
+    const shopifyId = decodeURIComponent(req.params.shopifyId);
+    const customer = customers.find(c => c.id === shopifyId);
+    if (!customer) return res.status(404).json({ error: 'Customer not found' });
+
+    const custOrders = orders
+      .filter(o => o.customer?.email === customer.email)
+      .map(o => ({
+        id: o.id, name: o.name, createdAt: o.createdAt,
+        financial: o.displayFinancialStatus,
+        fulfillment: o.displayFulfillmentStatus,
+        total: o.totalPriceSet?.shopMoney?.amount,
+        refunded: o.totalRefundedSet?.shopMoney?.amount || '0',
+        items: o.lineItems.edges.map(li => ({
+          title: li.node.title, quantity: li.node.quantity, sku: li.node.sku,
+        })),
+      }))
+      .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+
+    const tickets = getTickets({ customerId: shopifyId });
+    const notes = getCustomerNotes(shopifyId);
+    const customTags = getCustomerTags(shopifyId);
+
+    const totalSpent = parseFloat(customer.amountSpent?.amount || 0);
+    const numOrders = parseInt(customer.numberOfOrders || 0);
+    const avgOrderValue = numOrders > 0 ? totalSpent / numOrders : 0;
+
+    let tier = 'NEW';
+    if (totalSpent >= 500 || numOrders >= 10) tier = 'VIP';
+    else if (totalSpent >= 200 || numOrders >= 5) tier = 'LOYAL';
+    else if (numOrders >= 2) tier = 'REPEAT';
+    else if (numOrders >= 1) tier = 'CUSTOMER';
+
+    let riskLevel = 'none';
+    const recentOrders = custOrders.filter(o => (Date.now() - new Date(o.createdAt)) / 86400000 < 90);
+    if (numOrders >= 2 && recentOrders.length === 0) {
+      const lastOrder = custOrders[0];
+      const daysSince = lastOrder ? (Date.now() - new Date(lastOrder.createdAt)) / 86400000 : 999;
+      if (daysSince > 90) riskLevel = 'high';
+      else if (daysSince > 60) riskLevel = 'medium';
+    }
+
+    const productCounts = {};
+    custOrders.forEach(o => o.items.forEach(i => {
+      productCounts[i.title] = (productCounts[i.title] || 0) + i.quantity;
+    }));
+    const topProducts = Object.entries(productCounts)
+      .sort((a, b) => b[1] - a[1]).slice(0, 5)
+      .map(([title, qty]) => ({ title, quantity: qty }));
+
+    res.json({
+      id: customer.id, name: customer.displayName, email: customer.email, phone: customer.phone,
+      totalOrders: numOrders, totalSpent: totalSpent.toFixed(2),
+      avgOrderValue: avgOrderValue.toFixed(2), tier, riskLevel,
+      tags: customer.tags || [], customTags,
+      location: customer.defaultAddress
+        ? `${customer.defaultAddress.city || ''}, ${customer.defaultAddress.province || ''}, ${customer.defaultAddress.country || ''}`.replace(/^, |, $/g, '').replace(/, ,/g, ',')
+        : '',
+      createdAt: customer.createdAt, updatedAt: customer.updatedAt,
+      orders: custOrders, tickets, notes, topProducts,
+      recentOrders90d: recentOrders.length,
+    });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/customers/:shopifyId/notes', (req, res) => {
+  try {
+    const shopifyId = decodeURIComponent(req.params.shopifyId);
+    const note = addCustomerNote(shopifyId, req.body);
+    logActivity(req.body.author || 'Krystle', 'note_added', 'Added note to customer', { customerId: shopifyId });
+    res.status(201).json(note);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.put('/api/customers/:shopifyId/tags', (req, res) => {
+  try {
+    const shopifyId = decodeURIComponent(req.params.shopifyId);
+    const tags = setCustomerTags(shopifyId, req.body.tags || []);
+    logActivity('Krystle', 'tags_updated', 'Updated customer tags', { customerId: shopifyId });
+    res.json({ tags });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ─── CRM: TICKETS ──────────────────────────────
+
+app.get('/api/tickets', (req, res) => {
+  try {
+    const tickets = getTickets({
+      status: req.query.status, category: req.query.category,
+      priority: req.query.priority, customerId: req.query.customerId,
+      search: req.query.search, orderId: req.query.orderId,
+    });
+    res.json({ tickets, total: tickets.length });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/tickets/:id', (req, res) => {
+  try {
+    const ticket = getTicketById(req.params.id);
+    if (!ticket) return res.status(404).json({ error: 'Ticket not found' });
+    res.json(ticket);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/tickets', (req, res) => {
+  try {
+    const ticket = createTicket(req.body);
+    logActivity(req.body.assignee || 'Krystle', 'ticket_created', `Created ticket: ${ticket.subject}`, { ticketId: ticket.id });
+    res.status(201).json(ticket);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.patch('/api/tickets/:id', (req, res) => {
+  try {
+    const ticket = updateTicket(req.params.id, req.body);
+    if (!ticket) return res.status(404).json({ error: 'Ticket not found' });
+    logActivity('Krystle', 'ticket_updated', `Updated ticket ${ticket.id}`, { ticketId: ticket.id });
+    res.json(ticket);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.delete('/api/tickets/:id', (req, res) => {
+  try {
+    const ok = deleteTicket(req.params.id);
+    if (!ok) return res.status(404).json({ error: 'Ticket not found' });
+    logActivity('Krystle', 'ticket_deleted', `Deleted ticket ${req.params.id}`);
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/tickets/:id/notes', (req, res) => {
+  try {
+    const note = addTicketNote(req.params.id, req.body);
+    if (!note) return res.status(404).json({ error: 'Ticket not found' });
+    logActivity(req.body.author || 'Krystle', 'note_added', `Added note to ticket ${req.params.id}`, { ticketId: req.params.id });
+    res.status(201).json(note);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Bulk ticket actions
+app.post('/api/tickets/bulk', (req, res) => {
+  try {
+    const { ids, action, value } = req.body;
+    if (!ids || !ids.length) return res.status(400).json({ error: 'No ticket IDs' });
+    let updated = 0;
+    for (const id of ids) {
+      const updates = {};
+      if (action === 'status') updates.status = value;
+      else if (action === 'priority') updates.priority = value;
+      else if (action === 'assignee') updates.assignee = value;
+      if (updateTicket(id, updates)) updated++;
+    }
+    logActivity('Krystle', 'bulk_action', `Bulk ${action} update on ${updated} tickets`);
+    res.json({ updated });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ─── CRM: SAVED REPLIES & CATEGORIES ──────────
+
+app.get('/api/crm/saved-replies', (req, res) => res.json({ replies: getSavedReplies() }));
+app.post('/api/crm/saved-replies', (req, res) => {
+  try { res.status(201).json(addSavedReply(req.body)); }
+  catch (err) { res.status(500).json({ error: err.message }); }
+});
+app.delete('/api/crm/saved-replies/:id', (req, res) => {
+  try {
+    const ok = deleteSavedReply(req.params.id);
+    if (!ok) return res.status(404).json({ error: 'Not found' });
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+app.get('/api/crm/categories', (req, res) => res.json({ categories: getCategories() }));
+
+// ─── CRM: STATS / SETTINGS / ACTIVITY ─────────
+
+app.get('/api/crm/stats', (req, res) => {
+  try { res.json(getCrmStats()); }
+  catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/crm/settings', (req, res) => res.json(getSettings()));
+app.patch('/api/crm/settings', (req, res) => {
+  try {
+    const settings = updateSettings(req.body);
+    logActivity('Krystle', 'settings_updated', 'Updated CRM settings');
+    res.json(settings);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/activity', (req, res) => {
+  const limit = parseInt(req.query.limit) || 50;
+  res.json({ activity: getActivityLog(limit) });
+});
+
+// ─── GLOBAL SEARCH ─────────────────────────────
+
+app.get('/api/search', async (req, res) => {
+  try {
+    const q = (req.query.q || '').toLowerCase().trim();
+    if (!q) return res.json({ results: [] });
+    const { customers, orders } = await getData();
+    const enriched = enrichCustomers(customers, orders);
+    const tickets = getTickets({});
+    const results = [];
+
+    enriched.filter(c =>
+      (c.name || '').toLowerCase().includes(q) || (c.email || '').toLowerCase().includes(q)
+    ).slice(0, 5).forEach(c => results.push({
+      type: 'customer', id: c.id, title: c.name, subtitle: c.email,
+      meta: `${c.tier} · $${c.totalSpent}`,
+    }));
+
+    orders.filter(o =>
+      o.name.toLowerCase().includes(q) || (o.customer?.displayName || '').toLowerCase().includes(q)
+    ).slice(0, 5).forEach(o => results.push({
+      type: 'order', id: o.id, title: o.name,
+      subtitle: o.customer?.displayName || 'Guest',
+      meta: `$${o.totalPriceSet?.shopMoney?.amount}`,
+    }));
+
+    tickets.filter(t =>
+      t.subject.toLowerCase().includes(q) || t.customerName.toLowerCase().includes(q) || t.id.toLowerCase().includes(q)
+    ).slice(0, 5).forEach(t => results.push({
+      type: 'ticket', id: t.id, title: t.subject,
+      subtitle: t.customerName, meta: `${t.status}`,
+    }));
+
+    res.json({ results });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ─── REFRESH & SPA FALLBACK ───────────────────
+
+app.post('/api/refresh', async (req, res) => {
+  try {
+    cache = { products: null, orders: null, customers: null, lastFetch: 0 };
+    await getData(true);
+    logActivity('system', 'data_refresh', 'Shopify data manually refreshed');
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/{*splat}', (req, res) => {
+  res.sendFile(join(__dirname, '..', 'public', 'index.html'));
+});
+
+// ─── START ─────────────────────────────────────
+
+process.on('uncaughtException', (err) => console.error('[FATAL] Uncaught:', err));
+process.on('unhandledRejection', (err) => console.error('[FATAL] Unhandled rejection:', err));
+
+app.listen(PORT, () => {
+  console.log(`\n╔══════════════════════════════════════════════╗`);
+  console.log(`║  K.Lorayne Operations — Enterprise CRM       ║`);
+  console.log(`║  http://localhost:${PORT}                        ║`);
+  console.log(`╚══════════════════════════════════════════════╝\n`);
+  console.log(`  Store: ${getShopDomain()}`);
+  console.log(`  Server ready — fetching data in background...\n`);
+  // Fetch data in background so the server starts immediately
+  getData().then(() => console.log('  ✓ All data loaded!\n')).catch(err => console.error('[server] Pre-warm failed:', err));
+});

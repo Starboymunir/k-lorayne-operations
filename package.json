@@ -1,0 +1,17 @@
+{
+  "name": "k-lorayne-operations",
+  "version": "1.0.0",
+  "description": "K.Lorayne Apparel - Inventory audit, forecasting, CRM tools",
+  "type": "module",
+  "scripts": {
+    "start": "node src/server.js",
+    "audit": "node src/audit.js",
+    "test-connection": "node src/test-connection.js",
+    "replenishment": "node src/replenishment.js",
+    "alerts": "node src/alerts.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "express": "^5.2.1"
+  }
+}
