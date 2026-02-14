@@ -102,21 +102,7 @@
   <div id="toastContainer" class="toast-container"></div>
 
   <!-- Shopify App Bridge (enables embedding inside Shopify admin) -->
-  <script src="https://cdn.shopify.com/shopifycloud/app-bridge.js"></script>
-  <script>
-    // Initialize App Bridge when loaded inside Shopify admin iframe
-    (async function initAppBridge() {
-      if (typeof shopify !== 'undefined' && window.self !== window.top) {
-        try {
-          const cfg = await fetch('/api/app-config').then(r => r.json());
-          if (cfg.apiKey) {
-            shopify.config = { apiKey: cfg.apiKey, shop: cfg.shop };
-            console.log('[app-bridge] Embedded in Shopify admin');
-          }
-        } catch (e) { console.warn('[app-bridge] Init skipped:', e.message); }
-      }
-    })();
-  </script>
+  <script data-api-key="9e01d14d9c00429c81654a6a117c439d" src="https://cdn.shopify.com/shopifycloud/app-bridge.js"></script>
 
   <script src="/app.js"></script>
 </body>
