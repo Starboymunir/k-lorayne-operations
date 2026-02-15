@@ -536,7 +536,15 @@ async function loadInventory() {
   try {
     const res = await fetch('/api/inventory');
     const data = await res.json();
-    let sortCol = 'daysOfStock', sortDir = 1, searchTerm = '', filterP = 'ALL';
+    let sortCol = 'daysOfStock', sortDir = 1, searchTerm = '', filterP = 'ALL', velocityPeriod = 'monthly';
+
+    function getVelocityValue(v) {
+      return velocityPeriod === 'daily' ? v.dailyVelocity : velocityPeriod === 'weekly' ? v.weeklyVelocity : v.monthlyVelocity;
+    }
+
+    function getVelocityLabel() {
+      return velocityPeriod === 'daily' ? 'Daily' : velocityPeriod === 'weekly' ? 'Weekly' : 'Monthly';
+    }
 
     function render() {
       let items = data.variants;
@@ -549,9 +557,11 @@ async function loadInventory() {
           <td>${escHtml(v.product)}</td><td>${v.variant === 'Default Title' ? '—' : escHtml(v.variant)}</td>
           <td style="font-family:monospace;font-size:12px">${escHtml(v.sku) || '—'}</td>
           <td style="text-align:right">${v.available}</td><td style="text-align:right">${v.unitsSold}</td>
-          <td style="text-align:right">${v.monthlyVelocity}</td>
+          <td style="text-align:right">${getVelocityValue(v)}</td>
           <td style="text-align:right;${v.daysOfStock < 14 ? 'color:var(--red);font-weight:600' : v.daysOfStock < 21 ? 'color:var(--orange)' : ''}">${v.daysOfStock === 999 ? '∞' : v.daysOfStock}</td>
           <td>${velocityBadge(v.velocityClass)}</td><td>${priorityBadge(v.priority)}</td>
+          <td><span style="padding:2px 6px;border-radius:3px;font-size:11px;font-weight:600;background:${v.abcCategory === 'A' ? 'var(--accent-soft)' : v.abcCategory === 'B' ? 'var(--yellow-soft)' : 'var(--red-soft)'};color:${v.abcCategory === 'A' ? 'var(--accent)' : v.abcCategory === 'B' ? 'var(--yellow)' : 'var(--red)'}">${v.abcCategory}</span></td>
+          <td>${v.alertMe ? '<span style="padding:2px 6px;border-radius:3px;font-size:11px;font-weight:600;background:var(--red-soft);color:var(--red)">ALERT</span>' : '—'}</td>
         </tr>`).join('');
         document.getElementById('invCount').textContent = `${items.length} of ${data.variants.length} variants`;
       }
@@ -571,16 +581,23 @@ async function loadInventory() {
           <button class="filter-btn" data-filter="SLOW MOVER">Slow</button>
           <button class="filter-btn" data-filter="NO SALES">No Sales</button>
         </div>
+        <div class="filter-group" style="margin-left:auto">
+          <button class="filter-btn active" data-vel="monthly" style="font-size:12px">Monthly</button>
+          <button class="filter-btn" data-vel="weekly" style="font-size:12px">Weekly</button>
+          <button class="filter-btn" data-vel="daily" style="font-size:12px">Daily</button>
+        </div>
       </div>
       <div class="table-wrap"><table><thead><tr>
         <th data-sort="product">Product</th><th data-sort="variant">Variant</th><th data-sort="sku">SKU</th>
         <th data-sort="available" style="text-align:right">Stock</th><th data-sort="unitsSold" style="text-align:right">Sold</th>
-        <th data-sort="monthlyVelocity" style="text-align:right">Monthly</th><th data-sort="daysOfStock" style="text-align:right">Days Left</th>
+        <th data-sort="monthlyVelocity" style="text-align:right"><span id="velLabel">Monthly</span></th><th data-sort="daysOfStock" style="text-align:right">Days Left</th>
         <th data-sort="velocityClass">Velocity ${infoTip('FAST MOVER = sells 10+ units/month. REGULAR = 3-9 units/month. SLOW MOVER = under 3 units/month. NO SALES = zero sales in the reporting period.')}</th><th data-sort="priority">Status ${infoTip('CRITICAL = out of stock with sales history. URGENT = less than 14 days of stock left. REORDER = below safety level. WATCH = running lower than ideal. OK = well stocked.')}</th>
+        <th data-sort="abcCategory">ABC</th><th data-sort="alertMe">Alert</th>
       </tr></thead><tbody id="invBody"></tbody></table></div></div>`;
 
     $('#invSearch').addEventListener('input', e => { searchTerm = e.target.value; render(); });
-    $$('.filter-btn').forEach(btn => btn.addEventListener('click', () => { $$('.filter-btn').forEach(b => b.classList.remove('active')); btn.classList.add('active'); filterP = btn.dataset.filter; render(); }));
+    $$('.filter-btn[data-filter]').forEach(btn => btn.addEventListener('click', () => { $$('.filter-btn[data-filter]').forEach(b => b.classList.remove('active')); btn.classList.add('active'); filterP = btn.dataset.filter; render(); }));
+    $$('.filter-btn[data-vel]').forEach(btn => btn.addEventListener('click', () => { $$('.filter-btn[data-vel]').forEach(b => b.classList.remove('active')); btn.classList.add('active'); velocityPeriod = btn.dataset.vel; document.getElementById('velLabel').textContent = getVelocityLabel(); render(); }));
     $$('th[data-sort]').forEach(th => th.addEventListener('click', () => { const c = th.dataset.sort; if (sortCol === c) sortDir *= -1; else { sortCol = c; sortDir = 1; } render(); }));
     $('#exportInvBtn').addEventListener('click', () => exportCSV(data.variants, `inventory-${new Date().toISOString().split('T')[0]}.csv`));
     render();

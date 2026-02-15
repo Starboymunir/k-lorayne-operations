@@ -45,6 +45,15 @@ const PRODUCTS_QUERY = `
         node {
           id title handle productType vendor tags status
           totalInventory tracksInventory createdAt updatedAt
+          metafields(first: 10) {
+            edges {
+              node {
+                namespace
+                key
+                value
+              }
+            }
+          }
           variants(first: 100) {
             edges {
               node {
@@ -313,15 +322,41 @@ function analyzeInventory(products, orders, config = {}) {
       else if (monthlyVelocity >= 5) velocityClass = 'REGULAR';
       else if (monthlyVelocity > 0) velocityClass = 'SLOW MOVER';
 
+      // Extract ALERT ME metafield from product
+      const alertMeField = product.metafields?.edges?.find(e => 
+        e.node.key?.toLowerCase().includes('alert') || 
+        e.node.key === 'ALERT_ME' ||
+        e.node.value?.toLowerCase().includes('alert')
+      );
+      const alertMe = alertMeField?.node?.value === 'true' || alertMeField?.node?.value === '1' || false;
+
       variants.push({
         sku, product: product.title, variant: v.title,
         productType: product.productType || '', vendor: product.vendor || '',
         price: parseFloat(v.price), available, committed, onHand,
-        unitsSold, dailyVelocity, monthlyVelocity: Math.round(monthlyVelocity),
-        daysOfStock, reorderPoint, suggestedQty, needsReorder, priority, velocityClass,
+        unitsSold, dailyVelocity: Math.round(dailyVelocity * 10) / 10,
+        weeklyVelocity: Math.round(dailyVelocity * 7 * 10) / 10,
+        monthlyVelocity: Math.round(monthlyVelocity),
+        daysOfStock, reorderPoint, suggestedQty, needsReorder, priority, velocityClass, alertMe,
       });
     }
   }
+
+  // ─── ABC ANALYSIS (Pareto Classification) ───
+  // A: Top 20% revenue, B: Next 30%, C: Rest 50%
+  const totalRevenue = variants.reduce((sum, v) => sum + (v.price * v.unitsSold), 0);
+  let cumulativeRevenue = 0;
+
+  variants
+    .sort((a, b) => (b.price * b.unitsSold) - (a.price * a.unitsSold))
+    .forEach(v => {
+      cumulativeRevenue += v.price * v.unitsSold;
+      const percentage = totalRevenue > 0 ? (cumulativeRevenue / totalRevenue) * 100 : 0;
+      v.abcCategory = percentage <= 80 ? 'A' : percentage <= 95 ? 'B' : 'C';
+    });
+
+  // Re-sort to original order (by SKU for consistency)
+  variants.sort((a, b) => a.sku.localeCompare(b.sku));
 
   return { variants, skuSales, daysCovered, totalOrders: orders.length };
 }
