@@ -818,6 +818,103 @@ app.get('/api/replenishment', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// ─── CLEANUP ANALYSIS ──────────────────────────
+
+app.get('/api/cleanup-report', async (req, res) => {
+  try {
+    const { products, orders } = await getData();
+    const analysis = analyzeInventory(products, orders);
+    const now = new Date();
+    const thirtyDaysAgo = new Date(now - 30 * 86400000);
+
+    const reports = {
+      deadStock: [],
+      zeroStock: [],
+      missingData: [],
+      duplicates: new Map(),
+      slowMovers: [],
+      noSales: [],
+    };
+
+    // Group by SKU to find duplicates
+    const skuMap = new Map();
+    analysis.variants.forEach(v => {
+      if (!skuMap.has(v.sku)) skuMap.set(v.sku, []);
+      skuMap.get(v.sku).push(v);
+    });
+
+    analysis.variants.forEach(v => {
+      const lastOrderDate = orders.length > 0 
+        ? Math.max(...orders.filter(o => o.lineItems.edges.some(li => li.node.sku === v.sku))
+            .map(o => new Date(o.createdAt)))
+        : new Date(0);
+
+      // Dead Stock: Zero stock + No sales in 30 days OR never sold
+      if (v.available === 0 && (lastOrderDate < thirtyDaysAgo || lastOrderDate.getTime() === 0)) {
+        reports.deadStock.push({
+          sku: v.sku, product: v.product, variant: v.variant,
+          lastSale: lastOrderDate.getTime() === 0 ? 'Never' : lastOrderDate.toISOString().split('T')[0],
+          unitsSold: v.unitsSold,
+          price: v.price,
+        });
+      }
+
+      // Zero Stock
+      if (v.available === 0 && v.unitsSold > 0) {
+        reports.zeroStock.push({
+          sku: v.sku, product: v.product, variant: v.variant,
+          unitsSold: v.unitsSold, price: v.price, daysOfStock: v.daysOfStock,
+        });
+      }
+
+      // Missing Data
+      if (!v.sku || !v.price || !v.product) {
+        reports.missingData.push({
+          sku: v.sku || '(empty)', product: v.product, variant: v.variant,
+          missingFields: [!v.sku ? 'SKU' : null, !v.price ? 'Price' : null, !v.product ? 'Product' : null].filter(Boolean),
+        });
+      }
+
+      // Slow Movers (C category + <1 sale/month)
+      if (v.abcCategory === 'C' && v.monthlyVelocity < 1) {
+        reports.slowMovers.push({
+          sku: v.sku, product: v.product, variant: v.variant,
+          monthlyVelocity: v.monthlyVelocity, available: v.available, unitsSold: v.unitsSold,
+        });
+      }
+
+      // No Sales
+      if (v.unitsSold === 0) {
+        reports.noSales.push({
+          sku: v.sku, product: v.product, variant: v.variant,
+          daysTracked: analysis.daysCovered, available: v.available, price: v.price,
+        });
+      }
+    });
+
+    // Find duplicates
+    skuMap.forEach((items, sku) => {
+      if (items.length > 1 || sku === '' || sku === null) {
+        reports.duplicates.set(sku, items);
+      }
+    });
+
+    res.json({
+      deadStockCount: reports.deadStock.length,
+      zeroStockCount: reports.zeroStock.length,
+      missingDataCount: reports.missingData.length,
+      duplicatesCount: reports.duplicates.size,
+      slowMoversCount: reports.slowMovers.length,
+      noSalesCount: reports.noSales.length,
+      reports,
+      summary: {
+        potentialSavings: reports.deadStock.reduce((s, i) => s + i.price, 0),
+        potentialDeleteItems: reports.deadStock.length + reports.missingData.length,
+      },
+    });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // ─── ALERTS ────────────────────────────────────
 
 app.get('/api/alerts', async (req, res) => {

@@ -85,7 +85,7 @@ function navigateTo(page, params) {
     replenishment: 'Replenishment', alerts: 'Low-Stock Alerts',
     orders: 'Orders', customers: 'Customers',
     tickets: 'Support Tickets', analytics: 'Analytics & Reports',
-    settings: 'Settings', 'customer-profile': 'Customer Profile',
+    cleanup: 'Inventory Cleanup', settings: 'Settings', 'customer-profile': 'Customer Profile',
     'ticket-detail': 'Ticket Detail', 'order-detail': 'Order Detail',
   };
   $('#pageTitle').textContent = titles[page] || page;
@@ -96,7 +96,7 @@ function navigateTo(page, params) {
     replenishment: loadReplenishment, alerts: loadAlerts,
     orders: loadOrders, customers: loadCustomers,
     tickets: loadTickets, analytics: loadAnalytics,
-    settings: loadSettings, 'customer-profile': () => loadCustomerProfile(params),
+    cleanup: loadCleanup, settings: loadSettings, 'customer-profile': () => loadCustomerProfile(params),
     'ticket-detail': () => loadTicketDetail(params),
     'order-detail': () => loadOrderDetail(params),
   };
@@ -1232,6 +1232,145 @@ async function loadTicketDetail(ticketId) {
       toast('Ticket deleted', 'success');
       navigateTo('tickets');
     });
+  } catch (err) { $('#content').innerHTML = `<div class="empty-state"><h3>Error</h3><p>${escHtml(err.message)}</p></div>`; }
+}
+
+// ════════════════════════════════════════════════
+//  CLEANUP
+// ════════════════════════════════════════════════
+
+async function loadCleanup() {
+  try {
+    const res = await fetch('/api/cleanup-report');
+    const data = await res.json();
+    let activeTab = 'overview';
+
+    function renderTab() {
+      const content = document.getElementById('cleanupContent');
+      if (!content) return;
+
+      if (activeTab === 'overview') {
+        content.innerHTML = `
+          <div class="kpi-grid">
+            <div class="kpi-card clickable" onclick="document.querySelector('[data-ctab=deadStock]').click()">
+              <div class="kpi-icon" style="background:var(--red-soft);color:var(--red)">🗑</div>
+              <div class="kpi-data"><div class="kpi-value">${data.deadStockCount}</div><div class="kpi-label">Dead Stock</div><div class="kpi-sub">No sales in 30 days</div></div>
+            </div>
+            <div class="kpi-card clickable" onclick="document.querySelector('[data-ctab=zeroStock]').click()">
+              <div class="kpi-icon" style="background:var(--orange-soft);color:var(--orange)">📦</div>
+              <div class="kpi-data"><div class="kpi-value">${data.zeroStockCount}</div><div class="kpi-label">Zero Stock</div><div class="kpi-sub">Out of stock</div></div>
+            </div>
+            <div class="kpi-card clickable" onclick="document.querySelector('[data-ctab=missingData]').click()">
+              <div class="kpi-icon" style="background:var(--yellow-soft);color:var(--yellow)">⚠</div>
+              <div class="kpi-data"><div class="kpi-value">${data.missingDataCount}</div><div class="kpi-label">Missing Data</div><div class="kpi-sub">Incomplete info</div></div>
+            </div>
+            <div class="kpi-card clickable" onclick="document.querySelector('[data-ctab=duplicates]').click()">
+              <div class="kpi-icon" style="background:var(--accent-soft);color:var(--accent)">🔀</div>
+              <div class="kpi-data"><div class="kpi-value">${data.duplicatesCount}</div><div class="kpi-label">Duplicates</div><div class="kpi-sub">Same SKU</div></div>
+            </div>
+            <div class="kpi-card clickable" onclick="document.querySelector('[data-ctab=slowMovers]').click()">
+              <div class="kpi-icon" style="background:var(--red-soft);color:var(--red)">🐢</div>
+              <div class="kpi-data"><div class="kpi-value">${data.slowMoversCount}</div><div class="kpi-label">Slow Movers</div><div class="kpi-sub">C-category items</div></div>
+            </div>
+            <div class="kpi-card clickable" onclick="document.querySelector('[data-ctab=noSales]').click()">
+              <div class="kpi-icon" style="background:var(--text-muted);color:var(--text-dim)">○</div>
+              <div class="kpi-data"><div class="kpi-value">${data.noSalesCount}</div><div class="kpi-label">No Sales</div><div class="kpi-sub">Never sold</div></div>
+            </div>
+          </div>
+          <div class="section" style="margin-top:24px">
+            <div style="padding:20px;background:var(--yellow-soft);border-radius:6px;border-left:4px solid var(--yellow)">
+              <strong style="color:var(--yellow)">Potential Impacr:</strong> ${data.potentialDeleteItems} items could be archived or cleaned up
+            </div>
+          </div>
+        `;
+      } else if (activeTab === 'deadStock') {
+        content.innerHTML = `<div class="table-wrap"><table><thead><tr>
+          <th>Product</th><th>SKU</th><th style="text-align:right">Price</th><th style="text-align:right">Units Sold</th><th>Last Sale</th>
+        </tr></thead><tbody>${data.reports.deadStock.map(i => `<tr>
+          <td><strong>${escHtml(i.product)}</strong></td>
+          <td style="font-family:monospace;font-size:12px">${escHtml(i.sku)}</td>
+          <td style="text-align:right">${fmtMoney(i.price)}</td>
+          <td style="text-align:right">${i.unitsSold}</td>
+          <td>${i.lastSale}</td>
+        </tr>`).join('')}</tbody></table></div>`;
+      } else if (activeTab === 'zeroStock') {
+        content.innerHTML = `<div class="table-wrap"><table><thead><tr>
+          <th>Product</th><th>SKU</th><th style="text-align:right">Sold</th><th style="text-align:right">Days Left</th>
+        </tr></thead><tbody>${data.reports.zeroStock.map(i => `<tr>
+          <td><strong>${escHtml(i.product)}</strong></td>
+          <td style="font-family:monospace;font-size:12px">${escHtml(i.sku)}</td>
+          <td style="text-align:right">${i.unitsSold}</td>
+          <td style="text-align:right;color:var(--red);">${i.daysOfStock === 999 ? '∞' : i.daysOfStock}</td>
+        </tr>`).join('')}</tbody></table></div>`;
+      } else if (activeTab === 'missingData') {
+        content.innerHTML = `<div class="table-wrap"><table><thead><tr>
+          <th>Product</th><th>SKU</th><th>Missing Fields</th>
+        </tr></thead><tbody>${data.reports.missingData.map(i => `<tr>
+          <td><strong>${escHtml(i.product)}</strong></td>
+          <td style="font-family:monospace;font-size:12px">${escHtml(i.sku)}</td>
+          <td><span style="padding:2px 6px;border-radius:3px;font-size:11px;background:var(--red-soft);color:var(--red)">${i.missingFields.join(', ')}</span></td>
+        </tr>`).join('')}</tbody></table></div>`;
+      } else if (activeTab === 'duplicates') {
+        let duplicateHtml = '';
+        data.reports.duplicates.forEach((items, sku) => {
+          duplicateHtml += `<div style="margin-bottom:16px;padding:12px;border:1px solid var(--border);border-radius:4px">
+            <strong>SKU: ${escHtml(sku || '(empty)')}</strong> — ${items.length} variants
+            <div style="margin-top:8px;font-size:12px">
+              ${items.map(i => `<div style="padding:4px 0">• ${escHtml(i.product)} - ${escHtml(i.variant)}</div>`).join('')}
+            </div>
+          </div>`;
+        });
+        content.innerHTML = duplicateHtml || '<p style="color:var(--text-muted)">No duplicates found</p>';
+      } else if (activeTab === 'slowMovers') {
+        content.innerHTML = `<div class="table-wrap"><table><thead><tr>
+          <th>Product</th><th style="text-align:right">Monthly Sales</th><th style="text-align:right">Stock</th>
+        </tr></thead><tbody>${data.reports.slowMovers.map(i => `<tr>
+          <td><strong>${escHtml(i.product)}</strong></td>
+          <td style="text-align:right">${i.monthlyVelocity}</td>
+          <td style="text-align:right">${i.available}</td>
+        </tr>`).join('')}</tbody></table></div>`;
+      } else if (activeTab === 'noSales') {
+        content.innerHTML = `<div class="table-wrap"><table><thead><tr>
+          <th>Product</th><th>SKU</th><th style="text-align:right">Stock</th><th style="text-align:right">Days Tracked</th>
+        </tr></thead><tbody>${data.reports.noSales.map(i => `<tr>
+          <td><strong>${escHtml(i.product)}</strong></td>
+          <td style="font-family:monospace;font-size:12px">${escHtml(i.sku)}</td>
+          <td style="text-align:right">${i.available}</td>
+          <td style="text-align:right">${i.daysTracked}d</td>
+        </tr>`).join('')}</tbody></table></div>`;
+      }
+    }
+
+    $('#content').innerHTML = `
+      <div class="section">
+        <div class="section-header">
+          <h2 class="section-title">Inventory Cleanup</h2>
+          <p style="font-size:13px;color:var(--text-muted);margin:0">Identify and manage problematic inventory items</p>
+        </div>
+        <div class="toolbar" style="border-bottom:0;padding-bottom:0">
+          <div style="display:flex;gap:4px;flex-wrap:wrap">
+            <button class="filter-btn active" data-ctab="overview">Overview</button>
+            <button class="filter-btn" data-ctab="deadStock">Dead Stock (${data.deadStockCount})</button>
+            <button class="filter-btn" data-ctab="zeroStock">Zero Stock (${data.zeroStockCount})</button>
+            <button class="filter-btn" data-ctab="missingData">Missing Data (${data.missingDataCount})</button>
+            <button class="filter-btn" data-ctab="duplicates">Duplicates (${data.duplicatesCount})</button>
+            <button class="filter-btn" data-ctab="slowMovers">Slow Movers (${data.slowMoversCount})</button>
+            <button class="filter-btn" data-ctab="noSales">No Sales (${data.noSalesCount})</button>
+          </div>
+        </div>
+      </div>
+      <div class="section" style="padding:20px">
+        <div id="cleanupContent"></div>
+      </div>
+    `;
+
+    renderTab();
+    $$('[data-ctab]').forEach(btn => btn.addEventListener('click', () => {
+      $$('[data-ctab]').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      activeTab = btn.dataset.ctab;
+      renderTab();
+    }));
   } catch (err) { $('#content').innerHTML = `<div class="empty-state"><h3>Error</h3><p>${escHtml(err.message)}</p></div>`; }
 }
 
