@@ -844,10 +844,13 @@ app.get('/api/cleanup-report', async (req, res) => {
     });
 
     analysis.variants.forEach(v => {
-      const lastOrderDate = orders.length > 0 
-        ? Math.max(...orders.filter(o => o.lineItems.edges.some(li => li.node.sku === v.sku))
-            .map(o => new Date(o.createdAt)))
-        : new Date(0);
+      // Find last order date for this SKU
+      let lastOrderDate = new Date(0);
+      const matchingOrders = orders.filter(o => o.lineItems.edges.some(li => li.node.sku === v.sku));
+      if (matchingOrders.length > 0) {
+        const dates = matchingOrders.map(o => new Date(o.createdAt).getTime());
+        lastOrderDate = new Date(Math.max(...dates));
+      }
 
       // Dead Stock: Zero stock + No sales in 30 days OR never sold
       if (v.available === 0 && (lastOrderDate < thirtyDaysAgo || lastOrderDate.getTime() === 0)) {
@@ -893,9 +896,10 @@ app.get('/api/cleanup-report', async (req, res) => {
     });
 
     // Find duplicates
+    const duplicatesObj = {};
     skuMap.forEach((items, sku) => {
       if (items.length > 1 || sku === '' || sku === null) {
-        reports.duplicates.set(sku, items);
+        duplicatesObj[sku || '(empty)'] = items;
       }
     });
 
@@ -903,12 +907,19 @@ app.get('/api/cleanup-report', async (req, res) => {
       deadStockCount: reports.deadStock.length,
       zeroStockCount: reports.zeroStock.length,
       missingDataCount: reports.missingData.length,
-      duplicatesCount: reports.duplicates.size,
+      duplicatesCount: Object.keys(duplicatesObj).length,
       slowMoversCount: reports.slowMovers.length,
       noSalesCount: reports.noSales.length,
-      reports,
+      reports: {
+        deadStock: reports.deadStock,
+        zeroStock: reports.zeroStock,
+        missingData: reports.missingData,
+        duplicates: duplicatesObj,
+        slowMovers: reports.slowMovers,
+        noSales: reports.noSales,
+      },
       summary: {
-        potentialSavings: reports.deadStock.reduce((s, i) => s + i.price, 0),
+        potentialSavings: reports.deadStock.reduce((s, i) => s + (i.price || 0), 0),
         potentialDeleteItems: reports.deadStock.length + reports.missingData.length,
       },
     });
