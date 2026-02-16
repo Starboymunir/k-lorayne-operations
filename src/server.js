@@ -332,6 +332,7 @@ function analyzeInventory(products, orders, config = {}) {
 
       variants.push({
         sku, product: product.title, variant: v.title,
+        variantId: v.id, productId: product.id,
         productType: product.productType || '', vendor: product.vendor || '',
         price: parseFloat(v.price), available, committed, onHand,
         unitsSold, dailyVelocity: Math.round(dailyVelocity * 10) / 10,
@@ -843,51 +844,89 @@ app.get('/api/cleanup-report', async (req, res) => {
       skuMap.get(v.sku).push(v);
     });
 
+    // Build a product lookup so we can get the product ID for each variant
+    const productForVariant = new Map();
+    for (const product of products) {
+      for (const ve of product.variants.edges) {
+        productForVariant.set(ve.node.id, { productId: product.id, productTitle: product.title });
+      }
+    }
+
     analysis.variants.forEach(v => {
       // Find last order date for this SKU
       let lastOrderDate = new Date(0);
-      const matchingOrders = orders.filter(o => o.lineItems.edges.some(li => li.node.sku === v.sku));
-      if (matchingOrders.length > 0) {
-        const dates = matchingOrders.map(o => new Date(o.createdAt).getTime());
-        lastOrderDate = new Date(Math.max(...dates));
+      if (v.sku) {
+        const matchingOrders = orders.filter(o => o.lineItems.edges.some(li => li.node.sku === v.sku));
+        if (matchingOrders.length > 0) {
+          const dates = matchingOrders.map(o => new Date(o.createdAt).getTime());
+          lastOrderDate = new Date(Math.max(...dates));
+        }
       }
 
-      const base = { sku: v.sku || '(no SKU)', product: v.productTitle, variant: v.variantTitle, variantId: v.variantId, productId: v.productId };
+      // The inline analyzeInventory uses: v.product, v.variant, v.sku, v.unitsSold
+      // Look up the variant's GID from the products array
+      let variantId = null;
+      let productId = null;
+      const pInfo = productForVariant.get(v.variantId || '');
+      if (pInfo) { productId = pInfo.productId; }
+      // Also search by matching product+variant title if variantId field doesn't exist
+      if (!productId) {
+        for (const product of products) {
+          for (const ve of product.variants.edges) {
+            if (product.title === v.product && ve.node.title === v.variant) {
+              variantId = ve.node.id;
+              productId = product.id;
+              break;
+            }
+          }
+          if (productId) break;
+        }
+      } else {
+        variantId = v.variantId;
+      }
+
+      const base = {
+        sku: v.sku || '(no SKU)',
+        product: v.product || v.productTitle || '(unknown)',
+        variant: v.variant || v.variantTitle || '',
+        variantId: variantId,
+        productId: productId,
+      };
 
       // Dead Stock: Zero stock + No sales in 30 days OR never sold
       if (v.available === 0 && (lastOrderDate < thirtyDaysAgo || lastOrderDate.getTime() === 0)) {
         reports.deadStock.push({ ...base,
           lastSale: lastOrderDate.getTime() === 0 ? 'Never' : lastOrderDate.toISOString().split('T')[0],
-          unitsSold: v.unitsSold90d || 0, price: v.price,
+          unitsSold: v.unitsSold || 0, price: v.price,
         });
       }
 
       // Zero Stock: out of stock but has had sales
-      if (v.available === 0 && (v.unitsSold90d || 0) > 0) {
+      if (v.available === 0 && (v.unitsSold || 0) > 0) {
         reports.zeroStock.push({ ...base,
-          unitsSold: v.unitsSold90d || 0, price: v.price, daysOfStock: v.daysOfStock,
+          unitsSold: v.unitsSold || 0, price: v.price, daysOfStock: v.daysOfStock,
         });
       }
 
       // Missing Data
       const missingFields = [
-        (!v.sku || v.sku === '(no SKU)') ? 'SKU' : null,
+        (!v.sku || v.sku === '') ? 'SKU' : null,
         !v.price ? 'Price' : null,
-        !v.productTitle ? 'Title' : null,
+        !(v.product || v.productTitle) ? 'Title' : null,
       ].filter(Boolean);
       if (missingFields.length > 0) {
         reports.missingData.push({ ...base, missingFields });
       }
 
-      // Slow Movers: has some sales but < 1/month
-      if (v.velocityClass === 'SLOW MOVER' && v.monthlyVelocity < 1) {
+      // Slow Movers: SLOW MOVER class (monthlyVelocity > 0 but < 5)
+      if (v.velocityClass === 'SLOW MOVER') {
         reports.slowMovers.push({ ...base,
-          monthlyVelocity: v.monthlyVelocity, available: v.available, unitsSold: v.unitsSold90d || 0,
+          monthlyVelocity: v.monthlyVelocity, available: v.available, unitsSold: v.unitsSold || 0,
         });
       }
 
       // No Sales: zero units sold in the tracked period
-      if ((v.unitsSold90d || 0) === 0) {
+      if ((v.unitsSold || 0) === 0) {
         reports.noSales.push({ ...base,
           daysTracked: analysis.daysCovered, available: v.available, price: v.price,
         });
