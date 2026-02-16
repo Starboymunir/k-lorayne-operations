@@ -1243,394 +1243,261 @@ async function loadCleanup() {
   try {
     const res = await fetch('/api/cleanup-report');
     const data = await res.json();
+
+    // ── State ──
     let activeTab = 'overview';
-    let currentPage = 1;
-    const itemsPerPage = 10;
-    const selected = new Set(); // Track selected items by SKU
+    let page = 1;
+    const PER = 15;
+    // selected maps variantId → { product, sku, productId, category }
+    const sel = new Map();
 
-    // Store cleanup state globally for pagination access
-    window.__cleanupState = { selected, currentPage: () => currentPage, setPage: (p) => { currentPage = p; }, data };
+    // ── Helpers ──
+    const cats = ['deadStock','zeroStock','missingData','slowMovers','noSales'];
+    const catLabel = { deadStock:'Dead Stock', zeroStock:'Zero Stock', missingData:'Missing Data', slowMovers:'Slow Movers', noSales:'No Sales' };
+    const catIcon  = { deadStock:'🗑', zeroStock:'📦', missingData:'⚠', slowMovers:'🐢', noSales:'○' };
 
-    function getPaginatedItems(items) {
-      const total = items.length;
-      const maxPage = Math.ceil(total / itemsPerPage);
-      const start = (currentPage - 1) * itemsPerPage;
-      const paged = items.slice(start, start + itemsPerPage);
-      return { items: paged, total, maxPage, currentPage };
+    function paginate(arr) {
+      const total = arr.length;
+      const maxP = Math.ceil(total / PER) || 1;
+      if (page > maxP) page = maxP;
+      return { rows: arr.slice((page-1)*PER, page*PER), total, maxP };
     }
 
-    function renderPagination(total) {
-      if (total <= itemsPerPage) return '';
-      const maxPage = Math.ceil(total / itemsPerPage);
-      let html = '<div style="display:flex;gap:8px;justify-content:center;margin-top:16px;padding:12px;border-top:1px solid var(--border)">';
-      if (currentPage > 1) html += `<button class="btn btn-sm" onclick="window.__cleanupNavigate('prev')">← Prev</button>`;
-      html += `<span style="padding:6px 12px;border-radius:4px;background:var(--accent-soft);color:var(--accent);font-size:12px">Page ${currentPage} of ${maxPage}</span>`;
-      if (currentPage < maxPage) html += `<button class="btn btn-sm" onclick="window.__cleanupNavigate('next')">Next →</button>`;
-      html += '</div>';
-      return html;
-    }
+    function selBtnText() { return `✓ Selected (${sel.size})`; }
 
-    function updateSelectedButton() {
-      const selectedBtn = $('[data-ctab=selected]');
-      if (selectedBtn) selectedBtn.textContent = `✓ Selected (${selected.size})`;
-    }
-
-    function renderTab() {
-      const content = document.getElementById('cleanupContent');
-      if (!content) return;
-      updateSelectedButton();
-
-      if (activeTab === 'overview') {
-        const selectedCount = selected.size;
-        content.innerHTML = `
-          ${selectedCount > 0 ? `<div style="padding:16px;background:var(--accent-soft);border-radius:6px;margin-bottom:16px;border-left:4px solid var(--accent)">
-            <strong style="color:var(--accent)">${selectedCount} items selected</strong> — 
-            <button class="btn btn-sm" style="margin-left:12px" onclick="document.querySelector('[data-ctab=selected]').click()">View & Act →</button>
-          </div>` : ''}
-          <div class="kpi-grid">
-            <div class="kpi-card clickable" onclick="document.querySelector('[data-ctab=deadStock]').click()">
-              <div class="kpi-icon" style="background:var(--red-soft);color:var(--red)">🗑</div>
-              <div class="kpi-data"><div class="kpi-value">${data.deadStockCount}</div><div class="kpi-label">Dead Stock</div><div class="kpi-sub">No sales in 30 days</div></div>
-            </div>
-            <div class="kpi-card clickable" onclick="document.querySelector('[data-ctab=zeroStock]').click()">
-              <div class="kpi-icon" style="background:var(--orange-soft);color:var(--orange)">📦</div>
-              <div class="kpi-data"><div class="kpi-value">${data.zeroStockCount}</div><div class="kpi-label">Zero Stock</div><div class="kpi-sub">Out of stock</div></div>
-            </div>
-            <div class="kpi-card clickable" onclick="document.querySelector('[data-ctab=missingData]').click()">
-              <div class="kpi-icon" style="background:var(--yellow-soft);color:var(--yellow)">⚠</div>
-              <div class="kpi-data"><div class="kpi-value">${data.missingDataCount}</div><div class="kpi-label">Missing Data</div><div class="kpi-sub">Incomplete info</div></div>
-            </div>
-            <div class="kpi-card clickable" onclick="document.querySelector('[data-ctab=slowMovers]').click()">
-              <div class="kpi-icon" style="background:var(--red-soft);color:var(--red)">🐢</div>
-              <div class="kpi-data"><div class="kpi-value">${data.slowMoversCount}</div><div class="kpi-label">Slow Movers</div><div class="kpi-sub">C-category items</div></div>
-            </div>
-            <div class="kpi-card clickable" onclick="document.querySelector('[data-ctab=noSales]').click()">
-              <div class="kpi-icon" style="background:var(--text-muted);color:var(--text-dim)">○</div>
-              <div class="kpi-data"><div class="kpi-value">${data.noSalesCount}</div><div class="kpi-label">No Sales</div><div class="kpi-sub">Never sold</div></div>
-            </div>
-          </div>
-        `;
-      } else if (activeTab === 'selected') {
-        const selectedItems = [];
-        ['deadStock', 'zeroStock', 'missingData', 'slowMovers', 'noSales'].forEach(type => {
-          data.reports[type]?.forEach(i => {
-            if (selected.has(i.sku)) selectedItems.push({...i, type: type.replace(/([A-Z])/g, ' $1').trim()});
-          });
-        });
-
-        if (selectedItems.length === 0) {
-          content.innerHTML = '<div class="empty-state" style="padding:40px"><p>No items selected. Click checkboxes in other tabs to mark items you want to cleanup.</p></div>';
-        } else {
-          content.innerHTML = `
-            <div style="margin-bottom:16px;display:flex;gap:8px;flex-wrap:wrap">
-              <button class="btn btn-primary" id="bulkArchiveBtn">� Archive</button>
-              <button class="btn btn-danger" id="bulkDeleteBtn">🗑 Delete</button>
-              <button class="btn" id="bulkTagBtn">🏷 Tag "Review"</button>
-              <button class="btn" id="bulkClearBtn" style="margin-left:auto">✕ Clear All</button>
-            </div>
-            <div class="table-wrap"><table><thead><tr>
-              <th>Product</th><th>SKU</th><th>Category</th><th style="width:40px"></th>
-            </tr></thead><tbody>${selectedItems.map(i => `<tr>
-              <td><strong>${escHtml(i.product)}</strong></td>
-              <td style="font-family:monospace;font-size:12px">${escHtml(i.sku)}</td>
-              <td><span style="padding:2px 6px;border-radius:3px;font-size:11px;background:var(--accent-soft);color:var(--accent)">${i.type}</span></td>
-              <td><button class="btn btn-sm" onclick="window.__removeSelected('${i.sku}')">✕</button></td>
-            </tr>`).join('')}</tbody></table></div>
-          `;
-          setupBulkActions(selectedItems);
-        }
-      } else if (activeTab === 'deadStock') {
-        const { items, total } = getPaginatedItems(data.reports.deadStock);
-        content.innerHTML = `
-          <div style="margin-bottom:12px;display:flex;align-items:center;gap:8px">
-            <input type="checkbox" id="selectAllDeadStock"/> 
-            <label for="selectAllDeadStock" style="cursor:pointer;font-size:13px;margin:0">Select all on this page</label>
-            <span style="margin-left:auto;font-size:12px;color:var(--text-muted)">${total} items total</span>
-          </div>
-          <div class="table-wrap"><table><thead><tr>
-            <th style="width:40px"><input type="checkbox" id="deadHeadCheckbox"></th>
-            <th>Product</th><th>SKU</th><th style="text-align:right">Price</th><th style="text-align:right">Sold</th><th>Last Sale</th>
-          </tr></thead><tbody>${items.map(i => `<tr>
-            <td><input type="checkbox" data-sku="${i.sku}" class="item-checkbox"></td>
-            <td><strong>${escHtml(i.product)}</strong></td>
-            <td style="font-family:monospace;font-size:12px">${escHtml(i.sku)}</td>
-            <td style="text-align:right">${fmtMoney(i.price)}</td>
-            <td style="text-align:right">${i.unitsSold}</td>
-            <td>${i.lastSale}</td>
-          </tr>`).join('')}</tbody></table></div>
-          ${renderPagination(total)}
-        `;
-        setTimeout(() => setupCheckboxes(data.reports.deadStock, 'selectAllDeadStock'), 10);
-      } else if (activeTab === 'zeroStock') {
-        const { items, total } = getPaginatedItems(data.reports.zeroStock);
-        content.innerHTML = `
-          <div style="margin-bottom:12px;display:flex;align-items:center;gap:8px">
-            <input type="checkbox" id="selectAllZeroStock"/> 
-            <label for="selectAllZeroStock" style="cursor:pointer;font-size:13px;margin:0">Select all on this page</label>
-            <span style="margin-left:auto;font-size:12px;color:var(--text-muted)">${total} items total</span>
-          </div>
-          <div class="table-wrap"><table><thead><tr>
-            <th style="width:40px"></th>
-            <th>Product</th><th>SKU</th><th style="text-align:right">Sold</th><th style="text-align:right">Days Left</th>
-          </tr></thead><tbody>${items.map(i => `<tr>
-            <td><input type="checkbox" data-sku="${i.sku}" class="item-checkbox"></td>
-            <td><strong>${escHtml(i.product)}</strong></td>
-            <td style="font-family:monospace;font-size:12px">${escHtml(i.sku)}</td>
-            <td style="text-align:right">${i.unitsSold}</td>
-            <td style="text-align:right;color:var(--red);">${i.daysOfStock === 999 ? '∞' : i.daysOfStock}</td>
-          </tr>`).join('')}</tbody></table></div>
-          ${renderPagination(total)}
-        `;
-        setTimeout(() => setupCheckboxes(data.reports.zeroStock, 'selectAllZeroStock'), 10);
-      } else if (activeTab === 'missingData') {
-        const { items, total } = getPaginatedItems(data.reports.missingData);
-        content.innerHTML = `
-          <div style="margin-bottom:12px;display:flex;align-items:center;gap:8px">
-            <input type="checkbox" id="selectAllMissingData"/> 
-            <label for="selectAllMissingData" style="cursor:pointer;font-size:13px;margin:0">Select all on this page</label>
-            <span style="margin-left:auto;font-size:12px;color:var(--text-muted)">${total} items total</span>
-          </div>
-          <div class="table-wrap"><table><thead><tr>
-            <th style="width:40px"></th>
-            <th>Product</th><th>SKU</th><th>Missing</th>
-          </tr></thead><tbody>${items.map(i => `<tr>
-            <td><input type="checkbox" data-sku="${i.sku}" class="item-checkbox"></td>
-            <td><strong>${escHtml(i.product)}</strong></td>
-            <td style="font-family:monospace;font-size:12px">${escHtml(i.sku)}</td>
-            <td><span style="padding:2px 6px;border-radius:3px;font-size:11px;background:var(--red-soft);color:var(--red)">${i.missingFields.join(', ')}</span></td>
-          </tr>`).join('')}</tbody></table></div>
-          ${renderPagination(total)}
-        `;
-        setTimeout(() => setupCheckboxes(data.reports.missingData, 'selectAllMissingData'), 10);
-      } else if (activeTab === 'slowMovers') {
-        const { items, total } = getPaginatedItems(data.reports.slowMovers);
-        content.innerHTML = `
-          <div style="margin-bottom:12px;display:flex;align-items:center;gap:8px">
-            <input type="checkbox" id="selectAllSlowMovers"/> 
-            <label for="selectAllSlowMovers" style="cursor:pointer;font-size:13px;margin:0">Select all on this page</label>
-            <span style="margin-left:auto;font-size:12px;color:var(--text-muted)">${total} items total</span>
-          </div>
-          <div class="table-wrap"><table><thead><tr>
-            <th style="width:40px"></th>
-            <th>Product</th><th style="text-align:right">Monthly Sales</th><th style="text-align:right">Stock</th>
-          </tr></thead><tbody>${items.map(i => `<tr>
-            <td><input type="checkbox" data-sku="${i.sku}" class="item-checkbox"></td>
-            <td><strong>${escHtml(i.product)}</strong></td>
-            <td style="text-align:right">${i.monthlyVelocity}</td>
-            <td style="text-align:right">${i.available}</td>
-          </tr>`).join('')}</tbody></table></div>
-          ${renderPagination(total)}
-        `;
-        setTimeout(() => setupCheckboxes(data.reports.slowMovers, 'selectAllSlowMovers'), 10);
-      } else if (activeTab === 'noSales') {
-        const { items, total } = getPaginatedItems(data.reports.noSales);
-        content.innerHTML = `
-          <div style="margin-bottom:12px;display:flex;align-items:center;gap:8px">
-            <input type="checkbox" id="selectAllNoSales"/> 
-            <label for="selectAllNoSales" style="cursor:pointer;font-size:13px;margin:0">Select all on this page</label>
-            <span style="margin-left:auto;font-size:12px;color:var(--text-muted)">${total} items total</span>
-          </div>
-          <div class="table-wrap"><table><thead><tr>
-            <th style="width:40px"></th>
-            <th>Product</th><th>SKU</th><th style="text-align:right">Stock</th><th style="text-align:right">Days</th>
-          </tr></thead><tbody>${items.map(i => `<tr>
-            <td><input type="checkbox" data-sku="${i.sku}" class="item-checkbox"></td>
-            <td><strong>${escHtml(i.product)}</strong></td>
-            <td style="font-family:monospace;font-size:12px">${escHtml(i.sku)}</td>
-            <td style="text-align:right">${i.available}</td>
-            <td style="text-align:right">${i.daysTracked}d</td>
-          </tr>`).join('')}</tbody></table></div>
-          ${renderPagination(total)}
-        `;
-        setTimeout(() => setupCheckboxes(data.reports.noSales, 'selectAllNoSales'), 10);
-      }
-    }
-
-    function setupCheckboxes(fullList, selectAllId) {
-      // Sync individual checkboxes with selected set
-      $$('.item-checkbox').forEach(cb => {
-        cb.checked = selected.has(cb.dataset.sku);
-        cb.addEventListener('change', (e) => {
-          if (e.target.checked) selected.add(e.target.dataset.sku);
-          else selected.delete(e.target.dataset.sku);
-          updateSelectedButton();
-        });
-      });
-      
-      // Select all on current page
-      const selectAllCheckbox = $(selectAllId);
-      if (selectAllCheckbox) {
-        // Check if all on current page are selected
-        const itemCheckboxes = $$('.item-checkbox');
-        const allChecked = itemCheckboxes.length > 0 && itemCheckboxes.every(cb => cb.checked);
-        selectAllCheckbox.checked = allChecked;
-        
-        selectAllCheckbox.addEventListener('change', (e) => {
-          $$('.item-checkbox').forEach(cb => {
-            cb.checked = e.target.checked;
-            if (e.target.checked) selected.add(cb.dataset.sku);
-            else selected.delete(cb.dataset.sku);
-          });
-          updateSelectedButton();
-        });
-      }
-    }
-
-    window.__cleanupNavigate = (dir) => {
-      if (dir === 'next') currentPage++;
-      else if (dir === 'prev' && currentPage > 1) currentPage--;
-      renderTab();
-    };
-
-    // Setup event listeners for bulk actions after render
-    function setupBulkActions(selectedItems) {
-      setTimeout(() => {
-        const archiveBtn = $('#bulkArchiveBtn');
-        const deleteBtn = $('#bulkDeleteBtn');
-        const tagBtn = $('#bulkTagBtn');
-        const clearBtn = $('#bulkClearBtn');
-
-        if (archiveBtn) {
-          archiveBtn.onclick = async () => {
-            if (!confirm(`Archive ${selectedItems.length} items? They will be moved to archived status.`)) return;
-            
-            const skus = selectedItems.map(i => i.sku);
-            try {
-              const res = await fetch('/api/cleanup-action', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ action: 'archive', skus })
-              });
-              const result = await res.json();
-              
-              if (result.success > 0) {
-                toast(`✓ Archived ${result.success} items successfully!`, 'success');
-              }
-              if (result.failed > 0) {
-                toast(`⚠ Failed to archive ${result.failed} items`, 'warning');
-                if (result.errors.length > 0) console.log('Errors:', result.errors);
-              }
-              
-              selected.clear();
-              activeTab = 'overview';
-              currentPage = 1;
-              loadCleanup(); // Reload to refresh data
-            } catch (err) {
-              toast(`Error: ${err.message}`, 'error');
-            }
-          };
-        }
-
-        if (deleteBtn) {
-          deleteBtn.onclick = async () => {
-            if (!confirm(`Delete ${selectedItems.length} items PERMANENTLY? This cannot be undone!`)) return;
-            
-            const skus = selectedItems.map(i => i.sku);
-            try {
-              const res = await fetch('/api/cleanup-action', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ action: 'delete', skus })
-              });
-              const result = await res.json();
-              
-              if (result.success > 0) {
-                toast(`✓ Deleted ${result.success} items successfully!`, 'success');
-              }
-              if (result.failed > 0) {
-                toast(`⚠ Failed to delete ${result.failed} items`, 'warning');
-                if (result.errors.length > 0) console.log('Errors:', result.errors);
-              }
-              
-              selected.clear();
-              activeTab = 'overview';
-              currentPage = 1;
-              loadCleanup(); // Reload to refresh data
-            } catch (err) {
-              toast(`Error: ${err.message}`, 'error');
-            }
-          };
-        }
-
-        if (tagBtn) {
-          tagBtn.onclick = async () => {
-            if (!confirm(`Tag ${selectedItems.length} items with "Under Review"?`)) return;
-            
-            const skus = selectedItems.map(i => i.sku);
-            try {
-              const res = await fetch('/api/cleanup-action', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ action: 'tag', skus, tags: ['Under Review'] })
-              });
-              const result = await res.json();
-              
-              if (result.success > 0) {
-                toast(`✓ Tagged ${result.success} items successfully!`, 'success');
-              }
-              if (result.failed > 0) {
-                toast(`⚠ Failed to tag ${result.failed} items`, 'warning');
-                if (result.errors.length > 0) console.log('Errors:', result.errors);
-              }
-              
-              selected.clear();
-              activeTab = 'overview';
-              currentPage = 1;
-              loadCleanup(); // Reload to refresh data
-            } catch (err) {
-              toast(`Error: ${err.message}`, 'error');
-            }
-          };
-        }
-
-        if (clearBtn) {
-          clearBtn.onclick = () => {
-            selected.clear();
-            activeTab = 'overview';
-            currentPage = 1;
-            renderTab();
-          };
-        }
-      }, 50);
-    }
-
+    // ── Build the skeleton once ──
     $('#content').innerHTML = `
       <div class="section">
         <div class="section-header">
           <h2 class="section-title">Inventory Cleanup</h2>
-          <p style="font-size:13px;color:var(--text-muted);margin:0">☑ Check items → 📁 Bulk Action → Done. Makes cleanup super easy.</p>
+          <p style="font-size:13px;color:var(--text-muted);margin:0">☑ Check items → Go to Selected → Pick action</p>
         </div>
-        <div class="toolbar" style="border-bottom:0;padding-bottom:0;overflow-x:auto;overflow-y:hidden">
-          <div style="display:flex;gap:4px;flex-wrap:wrap;min-width:min-content;padding-right:20px">
+        <div class="toolbar" style="border-bottom:0;overflow-x:auto">
+          <div id="cleanupTabs" style="display:flex;gap:4px;min-width:min-content;padding-right:20px">
             <button class="filter-btn active" data-ctab="overview">Overview</button>
-            <button class="filter-btn" data-ctab="selected" style="background:var(--accent-soft);color:var(--accent);border-color:var(--accent)">✓ Selected (0)</button>
-            <button class="filter-btn" data-ctab="deadStock">🗑 Dead (${data.deadStockCount})</button>
-            <button class="filter-btn" data-ctab="zeroStock">📦 Empty (${data.zeroStockCount})</button>
-            <button class="filter-btn" data-ctab="missingData">⚠ Missing (${data.missingDataCount})</button>
-            <button class="filter-btn" data-ctab="slowMovers">🐢 Slow (${data.slowMoversCount})</button>
-            <button class="filter-btn" data-ctab="noSales">○ No Sales (${data.noSalesCount})</button>
+            <button class="filter-btn" data-ctab="selected" id="selTabBtn" style="background:var(--accent-soft);color:var(--accent);border-color:var(--accent);font-weight:700">${selBtnText()}</button>
+            <button class="filter-btn" data-ctab="deadStock">${catIcon.deadStock} Dead (${data.deadStockCount})</button>
+            <button class="filter-btn" data-ctab="zeroStock">${catIcon.zeroStock} Empty (${data.zeroStockCount})</button>
+            <button class="filter-btn" data-ctab="missingData">${catIcon.missingData} Missing (${data.missingDataCount})</button>
+            <button class="filter-btn" data-ctab="slowMovers">${catIcon.slowMovers} Slow (${data.slowMoversCount})</button>
+            <button class="filter-btn" data-ctab="noSales">${catIcon.noSales} Never (${data.noSalesCount})</button>
           </div>
         </div>
       </div>
-      <div class="section" style="padding:20px">
-        <div id="cleanupContent"></div>
-      </div>
+      <div class="section" style="padding:20px"><div id="cBody"></div></div>
     `;
 
-    window.__removeSelected = (sku) => {
-      selected.delete(sku);
-      updateSelectedButton();
-      renderTab();
-    };
+    const body = document.getElementById('cBody');
+    const selBtn = document.getElementById('selTabBtn');
 
-    renderTab();
-    $$('[data-ctab]').forEach(btn => btn.addEventListener('click', () => {
-      $$('[data-ctab]').forEach(b => b.classList.remove('active'));
+    // ── Tab switching ──
+    document.getElementById('cleanupTabs').addEventListener('click', e => {
+      const btn = e.target.closest('[data-ctab]');
+      if (!btn) return;
+      document.querySelectorAll('[data-ctab]').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
       activeTab = btn.dataset.ctab;
-      currentPage = 1;
-      renderTab();
-    }));
+      page = 1;
+      render();
+    });
+
+    // ── Render the active tab's content ──
+    function render() {
+      selBtn.textContent = selBtnText();
+      if (activeTab === 'overview')       renderOverview();
+      else if (activeTab === 'selected')  renderSelected();
+      else                                 renderCategory(activeTab);
+    }
+
+    // ── Overview ──
+    function renderOverview() {
+      body.innerHTML = `
+        ${sel.size > 0
+          ? `<div style="padding:16px;background:var(--accent-soft);border-radius:6px;margin-bottom:16px;border-left:4px solid var(--accent)">
+               <strong style="color:var(--accent)">${sel.size} items marked</strong>
+               <button class="btn btn-sm" style="margin-left:12px" data-ctab="selected">GO TO ACTIONS →</button>
+             </div>`
+          : '<div style="padding:12px;background:var(--bg-muted);border-radius:6px;margin-bottom:16px;color:var(--text-muted)">No items selected yet. Go to any category and check items.</div>'}
+        <div class="kpi-grid">
+          ${cats.map(c => `
+            <div class="kpi-card" style="cursor:pointer" data-ctab="${c}">
+              <div class="kpi-icon" style="background:var(--${c==='deadStock'||c==='slowMovers'?'red':c==='zeroStock'?'orange':c==='missingData'?'yellow':'text-muted'}-soft);color:var(--${c==='deadStock'||c==='slowMovers'?'red':c==='zeroStock'?'orange':c==='missingData'?'yellow':'text-dim'})">${catIcon[c]}</div>
+              <div class="kpi-data"><div class="kpi-value">${data[c+'Count']}</div><div class="kpi-label">${catLabel[c]}</div></div>
+            </div>
+          `).join('')}
+        </div>`;
+    }
+
+    // ── Selected items tab ──
+    function renderSelected() {
+      if (sel.size === 0) {
+        body.innerHTML = '<div class="empty-state" style="padding:40px"><h3>No items selected</h3><p>Go to any category and check the boxes next to items you want to clean up.</p></div>';
+        return;
+      }
+      const items = Array.from(sel.entries()).map(([vid, info]) => ({ variantId: vid, ...info }));
+      body.innerHTML = `
+        <div style="padding:16px;background:var(--bg-muted);border-radius:6px;margin-bottom:20px;border-left:4px solid var(--accent)">
+          <strong>${items.length} items ready</strong> — Pick an action:
+        </div>
+        <div style="margin-bottom:16px;display:grid;gap:8px;grid-template-columns:repeat(auto-fit,minmax(140px,1fr))">
+          <button class="btn btn-primary" id="actArchive" style="padding:14px;font-size:14px;font-weight:600">📦 ARCHIVE</button>
+          <button class="btn btn-danger"  id="actDelete"  style="padding:14px;font-size:14px;font-weight:600">🗑 DELETE</button>
+          <button class="btn"             id="actTag"     style="padding:14px;font-size:14px;font-weight:600">🏷 TAG</button>
+          <button class="btn"             id="actClear"   style="padding:14px;font-size:14px">✕ CLEAR ALL</button>
+        </div>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Product</th><th>SKU</th><th>Category</th><th style="width:40px"></th></tr></thead>
+          <tbody>${items.map(i => `<tr data-vid="${i.variantId}">
+            <td><strong>${escHtml(i.product)}</strong></td>
+            <td style="font-family:monospace;font-size:11px">${escHtml(i.sku)}</td>
+            <td><span style="padding:2px 6px;border-radius:3px;font-size:11px;background:var(--accent-soft);color:var(--accent)">${catLabel[i.category]||i.category}</span></td>
+            <td><button class="btn btn-sm sel-remove" data-vid="${i.variantId}">✕</button></td>
+          </tr>`).join('')}</tbody>
+        </table></div>`;
+
+      // Remove individual item
+      body.querySelectorAll('.sel-remove').forEach(btn => {
+        btn.addEventListener('click', () => { sel.delete(btn.dataset.vid); render(); });
+      });
+      // Clear all
+      document.getElementById('actClear').addEventListener('click', () => { sel.clear(); activeTab = 'overview'; page = 1; render(); });
+      // Bulk actions
+      ['archive','delete','tag'].forEach(action => {
+        document.getElementById('act' + action.charAt(0).toUpperCase() + action.slice(1)).addEventListener('click', () => doBulkAction(action));
+      });
+    }
+
+    // ── Category list with checkboxes ──
+    function renderCategory(cat) {
+      const allItems = data.reports[cat] || [];
+      const { rows, total, maxP } = paginate(allItems);
+
+      // Column headers per category
+      let extraHead = '';
+      if (cat === 'deadStock')   extraHead = '<th style="text-align:right">Price</th><th style="text-align:right">Sold</th><th>Last Sale</th>';
+      if (cat === 'zeroStock')   extraHead = '<th style="text-align:right">Sold</th><th style="text-align:right">Days</th>';
+      if (cat === 'missingData') extraHead = '<th>Missing</th>';
+      if (cat === 'slowMovers')  extraHead = '<th style="text-align:right">Monthly</th><th style="text-align:right">Stock</th>';
+      if (cat === 'noSales')     extraHead = '<th style="text-align:right">Stock</th><th style="text-align:right">Days</th>';
+
+      // Rows
+      const rowsHtml = rows.map(i => {
+        const vid = i.variantId;
+        const checked = sel.has(vid);
+        let extra = '';
+        if (cat === 'deadStock')   extra = `<td style="text-align:right">${fmtMoney(i.price)}</td><td style="text-align:right">${i.unitsSold}</td><td>${i.lastSale}</td>`;
+        if (cat === 'zeroStock')   extra = `<td style="text-align:right">${i.unitsSold}</td><td style="text-align:right;color:var(--red)">${i.daysOfStock === 999 ? '∞' : i.daysOfStock}</td>`;
+        if (cat === 'missingData') extra = `<td><span style="color:var(--red);font-size:11px">${i.missingFields.join(', ')}</span></td>`;
+        if (cat === 'slowMovers')  extra = `<td style="text-align:right">${i.monthlyVelocity}</td><td style="text-align:right">${i.available}</td>`;
+        if (cat === 'noSales')     extra = `<td style="text-align:right">${i.available}</td><td style="text-align:right">${i.daysTracked}d</td>`;
+        return `<tr data-vid="${vid}" style="${checked ? 'background:var(--accent-soft)' : ''}">
+          <td style="text-align:center"><input type="checkbox" class="rc" data-vid="${vid}" ${checked ? 'checked' : ''} style="cursor:pointer;width:18px;height:18px"/></td>
+          <td><strong>${escHtml(i.product)}</strong></td>
+          <td style="font-family:monospace;font-size:11px">${escHtml(i.sku)}</td>
+          ${extra}
+        </tr>`;
+      }).join('');
+
+      const allPageChecked = rows.length > 0 && rows.every(i => sel.has(i.variantId));
+
+      // Pagination
+      let pgn = '';
+      if (maxP > 1) {
+        pgn = `<div style="display:flex;gap:8px;justify-content:center;margin-top:16px;padding:12px;border-top:1px solid var(--border)">
+          ${page > 1 ? '<button class="btn btn-sm" id="pgPrev">← Prev</button>' : ''}
+          <span style="padding:6px 12px;border-radius:4px;background:var(--accent-soft);color:var(--accent);font-size:12px">Page ${page} of ${maxP}</span>
+          ${page < maxP ? '<button class="btn btn-sm" id="pgNext">Next →</button>' : ''}
+        </div>`;
+      }
+
+      body.innerHTML = `
+        <div style="margin-bottom:12px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          <input type="checkbox" id="selAll" ${allPageChecked ? 'checked' : ''} style="cursor:pointer;width:18px;height:18px"/>
+          <label for="selAll" style="cursor:pointer;font-size:13px;margin:0;flex:1"><strong>Select all on this page</strong></label>
+          <span style="font-size:12px;color:var(--accent);font-weight:600">${sel.size} total selected</span>
+        </div>
+        <div class="table-wrap"><table>
+          <thead><tr><th style="width:40px">☑</th><th>Product</th><th>SKU</th>${extraHead}</tr></thead>
+          <tbody>${rowsHtml}</tbody>
+        </table></div>
+        ${pgn}`;
+
+      // ── Wire up checkboxes (NO full re-render) ──
+      const selAllCb = document.getElementById('selAll');
+
+      // Individual checkboxes
+      body.querySelectorAll('.rc').forEach(cb => {
+        cb.addEventListener('change', () => {
+          const vid = cb.dataset.vid;
+          const item = rows.find(r => r.variantId === vid);
+          if (cb.checked && item) {
+            sel.set(vid, { product: item.product, sku: item.sku, productId: item.productId, category: cat });
+          } else {
+            sel.delete(vid);
+          }
+          // Update this row's background
+          const tr = cb.closest('tr');
+          if (tr) tr.style.background = cb.checked ? 'var(--accent-soft)' : '';
+          // Update select-all state
+          const allCbs = body.querySelectorAll('.rc');
+          selAllCb.checked = allCbs.length > 0 && Array.from(allCbs).every(c => c.checked);
+          // Update counts
+          selBtn.textContent = selBtnText();
+          const countSpan = body.querySelector('[style*="total selected"]');
+          if (countSpan) countSpan.textContent = sel.size + ' total selected';
+        });
+      });
+
+      // Select-all checkbox
+      if (selAllCb) {
+        selAllCb.addEventListener('change', () => {
+          const checked = selAllCb.checked;
+          body.querySelectorAll('.rc').forEach(cb => {
+            cb.checked = checked;
+            const vid = cb.dataset.vid;
+            const item = rows.find(r => r.variantId === vid);
+            if (checked && item) {
+              sel.set(vid, { product: item.product, sku: item.sku, productId: item.productId, category: cat });
+            } else {
+              sel.delete(vid);
+            }
+            const tr = cb.closest('tr');
+            if (tr) tr.style.background = checked ? 'var(--accent-soft)' : '';
+          });
+          selBtn.textContent = selBtnText();
+          const countSpan = body.querySelector('[style*="total selected"]');
+          if (countSpan) countSpan.textContent = sel.size + ' total selected';
+        });
+      }
+
+      // Pagination buttons
+      document.getElementById('pgPrev')?.addEventListener('click', () => { page--; render(); });
+      document.getElementById('pgNext')?.addEventListener('click', () => { page++; render(); });
+    }
+
+    // ── Bulk action ──
+    async function doBulkAction(action) {
+      const msgs = { archive: 'Archive', delete: 'PERMANENTLY DELETE', tag: 'Tag' };
+      if (!confirm(`${msgs[action]} ${sel.size} items?`)) return;
+      try {
+        const productIds = Array.from(sel.values()).map(v => v.productId);
+        const r = await fetch('/api/cleanup-action', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action, productIds, tags: action === 'tag' ? ['Under Review'] : undefined })
+        });
+        const result = await r.json();
+        if (result.success) toast(`✓ ${result.success} items ${action}d!`, 'success');
+        if (result.failed)  toast(`⚠ ${result.failed} failed`, 'warning');
+        sel.clear();
+        activeTab = 'overview';
+        page = 1;
+        setTimeout(() => loadCleanup(), 800);
+      } catch (e) { toast(e.message, 'error'); }
+    }
+
+    // Initial render
+    render();
   } catch (err) { $('#content').innerHTML = `<div class="empty-state"><h3>Error</h3><p>${escHtml(err.message)}</p></div>`; }
 }
 

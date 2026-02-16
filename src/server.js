@@ -843,6 +843,8 @@ app.get('/api/cleanup-report', async (req, res) => {
       skuMap.get(v.sku).push(v);
     });
 
+    // Build a seen-set so each variant only appears in ONE category (priority order)
+    const seen = new Set();
     analysis.variants.forEach(v => {
       // Find last order date for this SKU
       let lastOrderDate = new Date(0);
@@ -852,46 +854,50 @@ app.get('/api/cleanup-report', async (req, res) => {
         lastOrderDate = new Date(Math.max(...dates));
       }
 
+      const base = { sku: v.sku || '(no SKU)', product: v.productTitle, variant: v.variantTitle, variantId: v.variantId, productId: v.productId };
+
       // Dead Stock: Zero stock + No sales in 30 days OR never sold
       if (v.available === 0 && (lastOrderDate < thirtyDaysAgo || lastOrderDate.getTime() === 0)) {
-        reports.deadStock.push({
-          sku: v.sku, product: v.product, variant: v.variant,
+        reports.deadStock.push({ ...base,
           lastSale: lastOrderDate.getTime() === 0 ? 'Never' : lastOrderDate.toISOString().split('T')[0],
-          unitsSold: v.unitsSold,
-          price: v.price,
+          unitsSold: v.unitsSold90d || 0, price: v.price,
         });
+        seen.add(v.variantId);
       }
 
       // Zero Stock
-      if (v.available === 0 && v.unitsSold > 0) {
-        reports.zeroStock.push({
-          sku: v.sku, product: v.product, variant: v.variant,
-          unitsSold: v.unitsSold, price: v.price, daysOfStock: v.daysOfStock,
+      if (!seen.has(v.variantId) && v.available === 0 && (v.unitsSold90d || 0) > 0) {
+        reports.zeroStock.push({ ...base,
+          unitsSold: v.unitsSold90d || 0, price: v.price, daysOfStock: v.daysOfStock,
         });
+        seen.add(v.variantId);
       }
 
       // Missing Data
-      if (!v.sku || !v.price || !v.product) {
-        reports.missingData.push({
-          sku: v.sku || '(empty)', product: v.product, variant: v.variant,
-          missingFields: [!v.sku ? 'SKU' : null, !v.price ? 'Price' : null, !v.product ? 'Product' : null].filter(Boolean),
-        });
+      const missingFields = [
+        (!v.sku || v.sku === '(no SKU)') ? 'SKU' : null,
+        !v.price ? 'Price' : null,
+        !v.productTitle ? 'Title' : null,
+      ].filter(Boolean);
+      if (!seen.has(v.variantId) && missingFields.length > 0) {
+        reports.missingData.push({ ...base, missingFields });
+        seen.add(v.variantId);
       }
 
       // Slow Movers (C category + <1 sale/month)
-      if (v.abcCategory === 'C' && v.monthlyVelocity < 1) {
-        reports.slowMovers.push({
-          sku: v.sku, product: v.product, variant: v.variant,
-          monthlyVelocity: v.monthlyVelocity, available: v.available, unitsSold: v.unitsSold,
+      if (!seen.has(v.variantId) && v.velocityClass === 'SLOW MOVER' && v.monthlyVelocity < 1) {
+        reports.slowMovers.push({ ...base,
+          monthlyVelocity: v.monthlyVelocity, available: v.available, unitsSold: v.unitsSold90d || 0,
         });
+        seen.add(v.variantId);
       }
 
       // No Sales
-      if (v.unitsSold === 0) {
-        reports.noSales.push({
-          sku: v.sku, product: v.product, variant: v.variant,
+      if (!seen.has(v.variantId) && (v.unitsSold90d || 0) === 0) {
+        reports.noSales.push({ ...base,
           daysTracked: analysis.daysCovered, available: v.available, price: v.price,
         });
+        seen.add(v.variantId);
       }
     });
 
@@ -930,63 +936,46 @@ app.get('/api/cleanup-report', async (req, res) => {
 
 app.post('/api/cleanup-action', async (req, res) => {
   try {
-    const { action, skus, tags } = req.body;
+    const { action, productIds, tags } = req.body;
     
-    if (!action || !Array.isArray(skus) || skus.length === 0) {
-      return res.status(400).json({ error: 'Missing action or skus' });
+    if (!action || !Array.isArray(productIds) || productIds.length === 0) {
+      return res.status(400).json({ error: 'Missing action or productIds' });
     }
 
+    // Deduplicate product IDs (multiple variants may share a product)
+    const uniqueProductIds = [...new Set(productIds)];
     const { products } = await getData();
     const results = { success: 0, failed: 0, errors: [] };
 
-    for (const sku of skus) {
+    for (const productId of uniqueProductIds) {
       try {
-        const product = products.flatMap(p => p.variants || []).find(v => v.sku === sku);
-        const variant = product;
-        if (!variant || !variant.id) {
-          results.errors.push(`SKU ${sku}: Variant not found`);
+        const prod = products.find(p => p.id === productId);
+        if (!prod) {
+          results.errors.push(`Product ${productId}: Not found`);
           results.failed++;
           continue;
         }
 
-        const variantId = variant.id; // Already in gid format: gid://shopify/ProductVariant/123
-
         if (action === 'delete') {
-          // Delete product (gets the product from variant)
-          const productId = products.find(p => p.variants?.some(v => v.sku === sku))?.id;
-          if (!productId) {
-            results.errors.push(`SKU ${sku}: Product not found`);
-            results.failed++;
-            continue;
-          }
-
           const deleteQuery = `
-            mutation($input: ProductInput!) {
-              productDelete(input: {id: $input}) {
+            mutation($input: ProductDeleteInput!) {
+              productDelete(input: $input) {
                 deletedProductId
                 userErrors { field message }
               }
             }
           `;
           
-          const deleteResult = await shopifyGraphQL(deleteQuery, { input: productId });
+          const deleteResult = await shopifyGraphQL(deleteQuery, { input: { id: productId } });
           if (deleteResult.data?.productDelete?.userErrors?.length > 0) {
-            results.errors.push(`SKU ${sku}: ${deleteResult.data.productDelete.userErrors[0].message}`);
+            results.errors.push(`${prod.title}: ${deleteResult.data.productDelete.userErrors[0].message}`);
             results.failed++;
           } else {
             results.success++;
           }
         } 
         else if (action === 'tag') {
-          // Add tags to product
-          const productId = products.find(p => p.variants?.some(v => v.sku === sku))?.id;
-          if (!productId) {
-            results.errors.push(`SKU ${sku}: Product not found`);
-            results.failed++;
-            continue;
-          }
-
-          const currentTags = products.find(p => p.id === productId)?.tags || [];
+          const currentTags = prod.tags || [];
           const newTags = Array.isArray(tags) ? tags : [tags];
           const allTags = [...new Set([...currentTags, ...newTags])];
 
@@ -1000,28 +989,17 @@ app.post('/api/cleanup-action', async (req, res) => {
           `;
 
           const tagResult = await shopifyGraphQL(tagQuery, { 
-            input: { 
-              id: productId,
-              tags: allTags 
-            } 
+            input: { id: productId, tags: allTags } 
           });
 
           if (tagResult.data?.productUpdate?.userErrors?.length > 0) {
-            results.errors.push(`SKU ${sku}: ${tagResult.data.productUpdate.userErrors[0].message}`);
+            results.errors.push(`${prod.title}: ${tagResult.data.productUpdate.userErrors[0].message}`);
             results.failed++;
           } else {
             results.success++;
           }
         }
         else if (action === 'archive') {
-          // Archive product (set status to archived)
-          const productId = products.find(p => p.variants?.some(v => v.sku === sku))?.id;
-          if (!productId) {
-            results.errors.push(`SKU ${sku}: Product not found`);
-            results.failed++;
-            continue;
-          }
-
           const archiveQuery = `
             mutation($input: ProductInput!) {
               productUpdate(input: $input) {
@@ -1032,14 +1010,11 @@ app.post('/api/cleanup-action', async (req, res) => {
           `;
 
           const archiveResult = await shopifyGraphQL(archiveQuery, { 
-            input: { 
-              id: productId,
-              status: "ARCHIVED" 
-            } 
+            input: { id: productId, status: "ARCHIVED" } 
           });
 
           if (archiveResult.data?.productUpdate?.userErrors?.length > 0) {
-            results.errors.push(`SKU ${sku}: ${archiveResult.data.productUpdate.userErrors[0].message}`);
+            results.errors.push(`${prod.title}: ${archiveResult.data.productUpdate.userErrors[0].message}`);
             results.failed++;
           } else {
             results.success++;
@@ -1050,7 +1025,7 @@ app.post('/api/cleanup-action', async (req, res) => {
           results.failed++;
         }
       } catch (err) {
-        results.errors.push(`SKU ${sku}: ${err.message}`);
+        results.errors.push(`Product: ${err.message}`);
         results.failed++;
       }
     }
@@ -1062,7 +1037,7 @@ app.post('/api/cleanup-action', async (req, res) => {
 
     res.json({ 
       action, 
-      totalProcessed: skus.length,
+      totalProcessed: uniqueProductIds.length,
       ...results 
     });
   } catch (err) { res.status(500).json({ error: err.message }); }
