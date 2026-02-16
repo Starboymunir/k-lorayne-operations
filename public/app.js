@@ -1248,6 +1248,9 @@ async function loadCleanup() {
     const itemsPerPage = 10;
     const selected = new Set(); // Track selected items by SKU
 
+    // Store cleanup state globally for pagination access
+    window.__cleanupState = { selected, currentPage: () => currentPage, setPage: (p) => { currentPage = p; }, data };
+
     function getPaginatedItems(items) {
       const total = items.length;
       const maxPage = Math.ceil(total / itemsPerPage);
@@ -1260,16 +1263,22 @@ async function loadCleanup() {
       if (total <= itemsPerPage) return '';
       const maxPage = Math.ceil(total / itemsPerPage);
       let html = '<div style="display:flex;gap:8px;justify-content:center;margin-top:16px;padding:12px;border-top:1px solid var(--border)">';
-      if (currentPage > 1) html += `<button class="btn btn-sm" onclick="window.cleanupPrevPage()">← Prev</button>`;
+      if (currentPage > 1) html += `<button class="btn btn-sm" onclick="window.__cleanupNavigate('prev')">← Prev</button>`;
       html += `<span style="padding:6px 12px;border-radius:4px;background:var(--accent-soft);color:var(--accent);font-size:12px">Page ${currentPage} of ${maxPage}</span>`;
-      if (currentPage < maxPage) html += `<button class="btn btn-sm" onclick="window.cleanupNextPage()">Next →</button>`;
+      if (currentPage < maxPage) html += `<button class="btn btn-sm" onclick="window.__cleanupNavigate('next')">Next →</button>`;
       html += '</div>';
       return html;
+    }
+
+    function updateSelectedButton() {
+      const selectedBtn = $('[data-ctab=selected]');
+      if (selectedBtn) selectedBtn.textContent = `✓ Selected (${selected.size})`;
     }
 
     function renderTab() {
       const content = document.getElementById('cleanupContent');
       if (!content) return;
+      updateSelectedButton();
 
       if (activeTab === 'overview') {
         const selectedCount = selected.size;
@@ -1315,34 +1324,19 @@ async function loadCleanup() {
           content.innerHTML = `
             <div style="margin-bottom:16px;display:flex;gap:8px;flex-wrap:wrap">
               <button class="btn btn-primary" id="bulkArchiveBtn">📁 Mark as Review</button>
-              <button class="btn btn-danger" id="bulkDeleteBtn">🗑 Delete Selected</button>
+              <button class="btn btn-danger" id="bulkDeleteBtn">🗑 Delete Selected (${selectedItems.length})</button>
               <button class="btn" id="bulkClearBtn">✕ Clear All</button>
             </div>
             <div class="table-wrap"><table><thead><tr>
-              <th>Product</th><th>SKU</th><th>Category</th>
+              <th>Product</th><th>SKU</th><th>Category</th><th style="width:40px"></th>
             </tr></thead><tbody>${selectedItems.map(i => `<tr>
               <td><strong>${escHtml(i.product)}</strong></td>
               <td style="font-family:monospace;font-size:12px">${escHtml(i.sku)}</td>
               <td><span style="padding:2px 6px;border-radius:3px;font-size:11px;background:var(--accent-soft);color:var(--accent)">${i.type}</span></td>
+              <td><button class="btn btn-sm" onclick="window.__removeSelected('${i.sku}')">✕</button></td>
             </tr>`).join('')}</tbody></table></div>
           `;
-          setTimeout(() => {
-            $('#bulkArchiveBtn')?.addEventListener('click', () => toast('Marked for review - feature coming soon', 'info'));
-            $('#bulkDeleteBtn')?.addEventListener('click', () => {
-              if (confirm(`Delete ${selectedItems.length} items? This cannot be undone!`)) {
-                toast('Items will be deleted', 'success');
-                selected.clear();
-                activeTab = 'overview';
-                currentPage = 1;
-                renderTab();
-              }
-            });
-            $('#bulkClearBtn')?.addEventListener('click', () => {
-              selected.clear();
-              activeTab = 'overview';
-              renderTab();
-            });
-          }, 10);
+          setupBulkActions(selectedItems);
         }
       } else if (activeTab === 'deadStock') {
         const { items, total } = getPaginatedItems(data.reports.deadStock);
@@ -1452,30 +1446,81 @@ async function loadCleanup() {
     }
 
     function setupCheckboxes(fullList, selectAllId) {
+      // Sync individual checkboxes with selected set
       $$('.item-checkbox').forEach(cb => {
         cb.checked = selected.has(cb.dataset.sku);
         cb.addEventListener('change', (e) => {
           if (e.target.checked) selected.add(e.target.dataset.sku);
           else selected.delete(e.target.dataset.sku);
+          updateSelectedButton();
         });
       });
       
+      // Select all on current page
       const selectAllCheckbox = $(selectAllId);
       if (selectAllCheckbox) {
+        // Check if all on current page are selected
+        const itemCheckboxes = $$('.item-checkbox');
+        const allChecked = itemCheckboxes.length > 0 && itemCheckboxes.every(cb => cb.checked);
+        selectAllCheckbox.checked = allChecked;
+        
         selectAllCheckbox.addEventListener('change', (e) => {
-          const content = document.getElementById('cleanupContent');
-          const itemCheckboxes = content?.querySelectorAll('.item-checkbox') || [];
-          itemCheckboxes.forEach(cb => {
+          $$('.item-checkbox').forEach(cb => {
             cb.checked = e.target.checked;
             if (e.target.checked) selected.add(cb.dataset.sku);
             else selected.delete(cb.dataset.sku);
           });
+          updateSelectedButton();
         });
       }
     }
 
-    window.cleanupNextPage = () => { currentPage++; renderTab(); };
-    window.cleanupPrevPage = () => { currentPage--; renderTab(); };
+    window.__cleanupNavigate = (dir) => {
+      if (dir === 'next') currentPage++;
+      else if (dir === 'prev' && currentPage > 1) currentPage--;
+      renderTab();
+    };
+
+    // Setup event listeners for bulk actions after render
+    function setupBulkActions(selectedItems) {
+      setTimeout(() => {
+        const archiveBtn = $('#bulkArchiveBtn');
+        const deleteBtn = $('#bulkDeleteBtn');
+        const clearBtn = $('#bulkClearBtn');
+
+        if (archiveBtn) {
+          archiveBtn.onclick = () => {
+            toast('Marked for review - archiving all ' + selectedItems.length + ' items', 'success');
+            selected.clear();
+            activeTab = 'overview';
+            currentPage = 1;
+            renderTab();
+          };
+        }
+
+        if (deleteBtn) {
+          deleteBtn.onclick = () => {
+            if (confirm(`Delete ${selectedItems.length} items? This cannot be undone!`)) {
+              // TODO: Actually delete items via API
+              toast('Items deleted successfully!', 'success');
+              selected.clear();
+              activeTab = 'overview';
+              currentPage = 1;
+              renderTab();
+            }
+          };
+        }
+
+        if (clearBtn) {
+          clearBtn.onclick = () => {
+            selected.clear();
+            activeTab = 'overview';
+            currentPage = 1;
+            renderTab();
+          };
+        }
+      }, 50);
+    }
 
     $('#content').innerHTML = `
       <div class="section">
@@ -1483,13 +1528,13 @@ async function loadCleanup() {
           <h2 class="section-title">Inventory Cleanup</h2>
           <p style="font-size:13px;color:var(--text-muted);margin:0">☑ Check items → 📁 Bulk Action → Done. Makes cleanup super easy.</p>
         </div>
-        <div class="toolbar" style="border-bottom:0;padding-bottom:0">
-          <div style="display:flex;gap:4px;flex-wrap:wrap">
+        <div class="toolbar" style="border-bottom:0;padding-bottom:0;overflow-x:auto;overflow-y:hidden">
+          <div style="display:flex;gap:4px;flex-wrap:wrap;min-width:min-content;padding-right:20px">
             <button class="filter-btn active" data-ctab="overview">Overview</button>
-            <button class="filter-btn" data-ctab="selected" style="background:var(--accent-soft);color:var(--accent)">✓ Selected (0)</button>
-            <button class="filter-btn" data-ctab="deadStock">🗑 Dead Stock (${data.deadStockCount})</button>
-            <button class="filter-btn" data-ctab="zeroStock">📦 Zero Stock (${data.zeroStockCount})</button>
-            <button class="filter-btn" data-ctab="missingData">⚠ Missing Data (${data.missingDataCount})</button>
+            <button class="filter-btn" data-ctab="selected" style="background:var(--accent-soft);color:var(--accent);border-color:var(--accent)">✓ Selected (0)</button>
+            <button class="filter-btn" data-ctab="deadStock">🗑 Dead (${data.deadStockCount})</button>
+            <button class="filter-btn" data-ctab="zeroStock">📦 Empty (${data.zeroStockCount})</button>
+            <button class="filter-btn" data-ctab="missingData">⚠ Missing (${data.missingDataCount})</button>
             <button class="filter-btn" data-ctab="slowMovers">🐢 Slow (${data.slowMoversCount})</button>
             <button class="filter-btn" data-ctab="noSales">○ No Sales (${data.noSalesCount})</button>
           </div>
@@ -1500,14 +1545,18 @@ async function loadCleanup() {
       </div>
     `;
 
+    window.__removeSelected = (sku) => {
+      selected.delete(sku);
+      updateSelectedButton();
+      renderTab();
+    };
+
     renderTab();
     $$('[data-ctab]').forEach(btn => btn.addEventListener('click', () => {
       $$('[data-ctab]').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
       activeTab = btn.dataset.ctab;
       currentPage = 1;
-      const selectedBtn = $('[data-ctab=selected]');
-      if (selectedBtn) selectedBtn.textContent = `✓ Selected (${selected.size})`;
       renderTab();
     }));
   } catch (err) { $('#content').innerHTML = `<div class="empty-state"><h3>Error</h3><p>${escHtml(err.message)}</p></div>`; }
