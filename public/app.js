@@ -1290,15 +1290,25 @@ async function loadCleanup() {
     const body = document.getElementById('cBody');
     const selBtn = document.getElementById('selTabBtn');
 
-    // ── Tab switching ──
+    // ── Tab switching (handles both tab bar AND overview KPI card clicks) ──
+    function switchTab(tabName) {
+      document.querySelectorAll('#cleanupTabs [data-ctab]').forEach(b => b.classList.remove('active'));
+      const tabBtn = document.querySelector(`#cleanupTabs [data-ctab="${tabName}"]`);
+      if (tabBtn) tabBtn.classList.add('active');
+      activeTab = tabName;
+      page = 1;
+      render();
+    }
     document.getElementById('cleanupTabs').addEventListener('click', e => {
       const btn = e.target.closest('[data-ctab]');
       if (!btn) return;
-      document.querySelectorAll('[data-ctab]').forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
-      activeTab = btn.dataset.ctab;
-      page = 1;
-      render();
+      switchTab(btn.dataset.ctab);
+    });
+    // Delegate clicks on overview KPI cards and "GO TO ACTIONS" button
+    body.addEventListener('click', e => {
+      const btn = e.target.closest('[data-ctab]');
+      if (!btn) return;
+      switchTab(btn.dataset.ctab);
     });
 
     // ── Render the active tab's content ──
@@ -1414,7 +1424,7 @@ async function loadCleanup() {
         <div style="margin-bottom:12px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
           <input type="checkbox" id="selAll" ${allPageChecked ? 'checked' : ''} style="cursor:pointer;width:18px;height:18px"/>
           <label for="selAll" style="cursor:pointer;font-size:13px;margin:0;flex:1"><strong>Select all on this page</strong></label>
-          <span style="font-size:12px;color:var(--accent);font-weight:600">${sel.size} total selected</span>
+          <span class="sel-count-label" style="font-size:12px;color:var(--accent);font-weight:600">${sel.size} total selected</span>
         </div>
         <div class="table-wrap"><table>
           <thead><tr><th style="width:40px">☑</th><th>Product</th><th>SKU</th>${extraHead}</tr></thead>
@@ -1443,7 +1453,7 @@ async function loadCleanup() {
           selAllCb.checked = allCbs.length > 0 && Array.from(allCbs).every(c => c.checked);
           // Update counts
           selBtn.textContent = selBtnText();
-          const countSpan = body.querySelector('[style*="total selected"]');
+          const countSpan = body.querySelector('.sel-count-label');
           if (countSpan) countSpan.textContent = sel.size + ' total selected';
         });
       });
@@ -1465,7 +1475,7 @@ async function loadCleanup() {
             if (tr) tr.style.background = checked ? 'var(--accent-soft)' : '';
           });
           selBtn.textContent = selBtnText();
-          const countSpan = body.querySelector('[style*="total selected"]');
+          const countSpan = body.querySelector('.sel-count-label');
           if (countSpan) countSpan.textContent = sel.size + ' total selected';
         });
       }

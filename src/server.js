@@ -843,8 +843,6 @@ app.get('/api/cleanup-report', async (req, res) => {
       skuMap.get(v.sku).push(v);
     });
 
-    // Build a seen-set so each variant only appears in ONE category (priority order)
-    const seen = new Set();
     analysis.variants.forEach(v => {
       // Find last order date for this SKU
       let lastOrderDate = new Date(0);
@@ -862,15 +860,13 @@ app.get('/api/cleanup-report', async (req, res) => {
           lastSale: lastOrderDate.getTime() === 0 ? 'Never' : lastOrderDate.toISOString().split('T')[0],
           unitsSold: v.unitsSold90d || 0, price: v.price,
         });
-        seen.add(v.variantId);
       }
 
-      // Zero Stock
-      if (!seen.has(v.variantId) && v.available === 0 && (v.unitsSold90d || 0) > 0) {
+      // Zero Stock: out of stock but has had sales
+      if (v.available === 0 && (v.unitsSold90d || 0) > 0) {
         reports.zeroStock.push({ ...base,
           unitsSold: v.unitsSold90d || 0, price: v.price, daysOfStock: v.daysOfStock,
         });
-        seen.add(v.variantId);
       }
 
       // Missing Data
@@ -879,25 +875,22 @@ app.get('/api/cleanup-report', async (req, res) => {
         !v.price ? 'Price' : null,
         !v.productTitle ? 'Title' : null,
       ].filter(Boolean);
-      if (!seen.has(v.variantId) && missingFields.length > 0) {
+      if (missingFields.length > 0) {
         reports.missingData.push({ ...base, missingFields });
-        seen.add(v.variantId);
       }
 
-      // Slow Movers (C category + <1 sale/month)
-      if (!seen.has(v.variantId) && v.velocityClass === 'SLOW MOVER' && v.monthlyVelocity < 1) {
+      // Slow Movers: has some sales but < 1/month
+      if (v.velocityClass === 'SLOW MOVER' && v.monthlyVelocity < 1) {
         reports.slowMovers.push({ ...base,
           monthlyVelocity: v.monthlyVelocity, available: v.available, unitsSold: v.unitsSold90d || 0,
         });
-        seen.add(v.variantId);
       }
 
-      // No Sales
-      if (!seen.has(v.variantId) && (v.unitsSold90d || 0) === 0) {
+      // No Sales: zero units sold in the tracked period
+      if ((v.unitsSold90d || 0) === 0) {
         reports.noSales.push({ ...base,
           daysTracked: analysis.daysCovered, available: v.available, price: v.price,
         });
-        seen.add(v.variantId);
       }
     });
 
