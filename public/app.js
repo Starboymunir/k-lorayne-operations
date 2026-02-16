@@ -1323,9 +1323,10 @@ async function loadCleanup() {
         } else {
           content.innerHTML = `
             <div style="margin-bottom:16px;display:flex;gap:8px;flex-wrap:wrap">
-              <button class="btn btn-primary" id="bulkArchiveBtn">📁 Mark as Review</button>
-              <button class="btn btn-danger" id="bulkDeleteBtn">🗑 Delete Selected (${selectedItems.length})</button>
-              <button class="btn" id="bulkClearBtn">✕ Clear All</button>
+              <button class="btn btn-primary" id="bulkArchiveBtn">� Archive</button>
+              <button class="btn btn-danger" id="bulkDeleteBtn">🗑 Delete</button>
+              <button class="btn" id="bulkTagBtn">🏷 Tag "Review"</button>
+              <button class="btn" id="bulkClearBtn" style="margin-left:auto">✕ Clear All</button>
             </div>
             <div class="table-wrap"><table><thead><tr>
               <th>Product</th><th>SKU</th><th>Category</th><th style="width:40px"></th>
@@ -1486,27 +1487,98 @@ async function loadCleanup() {
       setTimeout(() => {
         const archiveBtn = $('#bulkArchiveBtn');
         const deleteBtn = $('#bulkDeleteBtn');
+        const tagBtn = $('#bulkTagBtn');
         const clearBtn = $('#bulkClearBtn');
 
         if (archiveBtn) {
-          archiveBtn.onclick = () => {
-            toast('Marked for review - archiving all ' + selectedItems.length + ' items', 'success');
-            selected.clear();
-            activeTab = 'overview';
-            currentPage = 1;
-            renderTab();
+          archiveBtn.onclick = async () => {
+            if (!confirm(`Archive ${selectedItems.length} items? They will be moved to archived status.`)) return;
+            
+            const skus = selectedItems.map(i => i.sku);
+            try {
+              const res = await fetch('/api/cleanup-action', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: 'archive', skus })
+              });
+              const result = await res.json();
+              
+              if (result.success > 0) {
+                toast(`✓ Archived ${result.success} items successfully!`, 'success');
+              }
+              if (result.failed > 0) {
+                toast(`⚠ Failed to archive ${result.failed} items`, 'warning');
+                if (result.errors.length > 0) console.log('Errors:', result.errors);
+              }
+              
+              selected.clear();
+              activeTab = 'overview';
+              currentPage = 1;
+              loadCleanup(); // Reload to refresh data
+            } catch (err) {
+              toast(`Error: ${err.message}`, 'error');
+            }
           };
         }
 
         if (deleteBtn) {
-          deleteBtn.onclick = () => {
-            if (confirm(`Delete ${selectedItems.length} items? This cannot be undone!`)) {
-              // TODO: Actually delete items via API
-              toast('Items deleted successfully!', 'success');
+          deleteBtn.onclick = async () => {
+            if (!confirm(`Delete ${selectedItems.length} items PERMANENTLY? This cannot be undone!`)) return;
+            
+            const skus = selectedItems.map(i => i.sku);
+            try {
+              const res = await fetch('/api/cleanup-action', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: 'delete', skus })
+              });
+              const result = await res.json();
+              
+              if (result.success > 0) {
+                toast(`✓ Deleted ${result.success} items successfully!`, 'success');
+              }
+              if (result.failed > 0) {
+                toast(`⚠ Failed to delete ${result.failed} items`, 'warning');
+                if (result.errors.length > 0) console.log('Errors:', result.errors);
+              }
+              
               selected.clear();
               activeTab = 'overview';
               currentPage = 1;
-              renderTab();
+              loadCleanup(); // Reload to refresh data
+            } catch (err) {
+              toast(`Error: ${err.message}`, 'error');
+            }
+          };
+        }
+
+        if (tagBtn) {
+          tagBtn.onclick = async () => {
+            if (!confirm(`Tag ${selectedItems.length} items with "Under Review"?`)) return;
+            
+            const skus = selectedItems.map(i => i.sku);
+            try {
+              const res = await fetch('/api/cleanup-action', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: 'tag', skus, tags: ['Under Review'] })
+              });
+              const result = await res.json();
+              
+              if (result.success > 0) {
+                toast(`✓ Tagged ${result.success} items successfully!`, 'success');
+              }
+              if (result.failed > 0) {
+                toast(`⚠ Failed to tag ${result.failed} items`, 'warning');
+                if (result.errors.length > 0) console.log('Errors:', result.errors);
+              }
+              
+              selected.clear();
+              activeTab = 'overview';
+              currentPage = 1;
+              loadCleanup(); // Reload to refresh data
+            } catch (err) {
+              toast(`Error: ${err.message}`, 'error');
             }
           };
         }

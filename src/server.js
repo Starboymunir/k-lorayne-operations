@@ -926,6 +926,148 @@ app.get('/api/cleanup-report', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// ─── CLEANUP ACTIONS (Delete, Tag, Archive) ────
+
+app.post('/api/cleanup-action', async (req, res) => {
+  try {
+    const { action, skus, tags } = req.body;
+    
+    if (!action || !Array.isArray(skus) || skus.length === 0) {
+      return res.status(400).json({ error: 'Missing action or skus' });
+    }
+
+    const { products } = await getData();
+    const results = { success: 0, failed: 0, errors: [] };
+
+    for (const sku of skus) {
+      try {
+        const product = products.flatMap(p => p.variants || []).find(v => v.sku === sku);
+        const variant = product;
+        if (!variant || !variant.id) {
+          results.errors.push(`SKU ${sku}: Variant not found`);
+          results.failed++;
+          continue;
+        }
+
+        const variantId = variant.id; // Already in gid format: gid://shopify/ProductVariant/123
+
+        if (action === 'delete') {
+          // Delete product (gets the product from variant)
+          const productId = products.find(p => p.variants?.some(v => v.sku === sku))?.id;
+          if (!productId) {
+            results.errors.push(`SKU ${sku}: Product not found`);
+            results.failed++;
+            continue;
+          }
+
+          const deleteQuery = `
+            mutation($input: ProductInput!) {
+              productDelete(input: {id: $input}) {
+                deletedProductId
+                userErrors { field message }
+              }
+            }
+          `;
+          
+          const deleteResult = await shopifyGraphQL(deleteQuery, { input: productId });
+          if (deleteResult.data?.productDelete?.userErrors?.length > 0) {
+            results.errors.push(`SKU ${sku}: ${deleteResult.data.productDelete.userErrors[0].message}`);
+            results.failed++;
+          } else {
+            results.success++;
+          }
+        } 
+        else if (action === 'tag') {
+          // Add tags to product
+          const productId = products.find(p => p.variants?.some(v => v.sku === sku))?.id;
+          if (!productId) {
+            results.errors.push(`SKU ${sku}: Product not found`);
+            results.failed++;
+            continue;
+          }
+
+          const currentTags = products.find(p => p.id === productId)?.tags || [];
+          const newTags = Array.isArray(tags) ? tags : [tags];
+          const allTags = [...new Set([...currentTags, ...newTags])];
+
+          const tagQuery = `
+            mutation($input: ProductInput!) {
+              productUpdate(input: $input) {
+                product { id tags }
+                userErrors { field message }
+              }
+            }
+          `;
+
+          const tagResult = await shopifyGraphQL(tagQuery, { 
+            input: { 
+              id: productId,
+              tags: allTags 
+            } 
+          });
+
+          if (tagResult.data?.productUpdate?.userErrors?.length > 0) {
+            results.errors.push(`SKU ${sku}: ${tagResult.data.productUpdate.userErrors[0].message}`);
+            results.failed++;
+          } else {
+            results.success++;
+          }
+        }
+        else if (action === 'archive') {
+          // Archive product (set status to archived)
+          const productId = products.find(p => p.variants?.some(v => v.sku === sku))?.id;
+          if (!productId) {
+            results.errors.push(`SKU ${sku}: Product not found`);
+            results.failed++;
+            continue;
+          }
+
+          const archiveQuery = `
+            mutation($input: ProductInput!) {
+              productUpdate(input: $input) {
+                product { id status }
+                userErrors { field message }
+              }
+            }
+          `;
+
+          const archiveResult = await shopifyGraphQL(archiveQuery, { 
+            input: { 
+              id: productId,
+              status: "ARCHIVED" 
+            } 
+          });
+
+          if (archiveResult.data?.productUpdate?.userErrors?.length > 0) {
+            results.errors.push(`SKU ${sku}: ${archiveResult.data.productUpdate.userErrors[0].message}`);
+            results.failed++;
+          } else {
+            results.success++;
+          }
+        }
+        else {
+          results.errors.push(`Unknown action: ${action}`);
+          results.failed++;
+        }
+      } catch (err) {
+        results.errors.push(`SKU ${sku}: ${err.message}`);
+        results.failed++;
+      }
+    }
+
+    // Invalidate cache on successful actions
+    if (results.success > 0) {
+      cache = { products: null, orders: null, customers: null, lastFetch: 0 };
+    }
+
+    res.json({ 
+      action, 
+      totalProcessed: skus.length,
+      ...results 
+    });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // ─── ALERTS ────────────────────────────────────
 
 app.get('/api/alerts', async (req, res) => {
