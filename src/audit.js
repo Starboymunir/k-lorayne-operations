@@ -235,8 +235,8 @@ function analyzeInventory(products, orders) {
     v.daysOfStock = v.dailyVelocity > 0 ? Math.round(v.available / v.dailyVelocity) : (v.available > 0 ? 999 : 0);
 
     // Classification
-    if (v.monthlyVelocity >= 20) v.velocityClass = 'FAST MOVER';
-    else if (v.monthlyVelocity >= 5) v.velocityClass = 'REGULAR';
+    if (v.monthlyVelocity >= 10) v.velocityClass = 'FAST MOVER';
+    else if (v.monthlyVelocity >= 3) v.velocityClass = 'REGULAR';
     else if (v.monthlyVelocity > 0) v.velocityClass = 'SLOW MOVER';
     else v.velocityClass = 'NO SALES';
   }

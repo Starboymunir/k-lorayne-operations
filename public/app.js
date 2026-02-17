@@ -591,7 +591,7 @@ async function loadInventory() {
         <th data-sort="product">Product</th><th data-sort="variant">Variant</th><th data-sort="sku">SKU</th>
         <th data-sort="available" style="text-align:right">Stock</th><th data-sort="unitsSold" style="text-align:right">Sold</th>
         <th data-sort="monthlyVelocity" style="text-align:right"><span id="velLabel">Monthly</span></th><th data-sort="daysOfStock" style="text-align:right">Days Left</th>
-        <th data-sort="velocityClass">Velocity ${infoTip('FAST MOVER = sells 10+ units/month. REGULAR = 3-9 units/month. SLOW MOVER = under 3 units/month. NO SALES = zero sales in the reporting period.')}</th><th data-sort="priority">Status ${infoTip('CRITICAL = out of stock with sales history. URGENT = less than 14 days of stock left. REORDER = below safety level. WATCH = running lower than ideal. OK = well stocked.')}</th>
+        <th data-sort="velocityClass">Velocity ${infoTip('FAST MOVER = sells 10+ units/month. REGULAR = 3–9 units/month. SLOW MOVER = 1–2 units/month. NO SALES = zero sales in the reporting period.')}</th><th data-sort="priority">Status ${infoTip('CRITICAL = out of stock with sales history. URGENT = less than 14 days of stock left. REORDER = below safety level. WATCH = running lower than ideal. OK = well stocked.')}</th>
         <th data-sort="abcCategory">ABC</th><th data-sort="alertMe">Alert</th>
       </tr></thead><tbody id="invBody"></tbody></table></div></div>`;
 
@@ -633,10 +633,10 @@ async function loadReplenishment() {
 
     $('#content').innerHTML = `
       <div class="kpi-grid">
-        <div class="kpi-card"><div class="kpi-icon" style="background:var(--red-soft);color:var(--red)">!</div><div class="kpi-data"><div class="kpi-value">${data.summary.critical}</div><div class="kpi-label">Critical ${infoTip('Out of stock items that had sales — need immediate reorder.')}</div></div></div>
-        <div class="kpi-card"><div class="kpi-icon" style="background:var(--orange-soft);color:var(--orange)">⚠</div><div class="kpi-data"><div class="kpi-value">${data.summary.urgent}</div><div class="kpi-label">Urgent ${infoTip('Will run out in less than 14 days based on current sales rate.')}</div></div></div>
-        <div class="kpi-card"><div class="kpi-icon" style="background:var(--yellow-soft);color:var(--yellow)">↻</div><div class="kpi-data"><div class="kpi-value">${data.summary.reorder}</div><div class="kpi-label">Reorder ${infoTip('Stock is below the recommended safety level — add to your next purchase order.')}</div></div></div>
-        <div class="kpi-card"><div class="kpi-icon" style="background:var(--accent-soft);color:var(--accent)">📦</div><div class="kpi-data"><div class="kpi-value">${fmt(data.summary.totalUnitsToOrder)}</div><div class="kpi-label">Units to Order ${infoTip('Total units you should order now to cover the next 60 days of sales.')}</div><div class="kpi-sub">Est: ${fmtMoney(totalEstCost)}</div></div></div>
+        <div class="kpi-card" style="cursor:pointer" data-rfilter="CRITICAL"><div class="kpi-icon" style="background:var(--red-soft);color:var(--red)">!</div><div class="kpi-data"><div class="kpi-value">${data.summary.critical}</div><div class="kpi-label">Critical ${infoTip('Out of stock items that had sales — need immediate reorder.')}</div></div></div>
+        <div class="kpi-card" style="cursor:pointer" data-rfilter="URGENT"><div class="kpi-icon" style="background:var(--orange-soft);color:var(--orange)">⚠</div><div class="kpi-data"><div class="kpi-value">${data.summary.urgent}</div><div class="kpi-label">Urgent ${infoTip('Will run out in less than 14 days based on current sales rate.')}</div></div></div>
+        <div class="kpi-card" style="cursor:pointer" data-rfilter="REORDER"><div class="kpi-icon" style="background:var(--yellow-soft);color:var(--yellow)">↻</div><div class="kpi-data"><div class="kpi-value">${data.summary.reorder}</div><div class="kpi-label">Reorder ${infoTip('Stock is below the recommended safety level — add to your next purchase order.')}</div></div></div>
+        <div class="kpi-card" style="cursor:pointer" data-rfilter="ALL"><div class="kpi-icon" style="background:var(--accent-soft);color:var(--accent)">📦</div><div class="kpi-data"><div class="kpi-value">${fmt(data.summary.totalUnitsToOrder)}</div><div class="kpi-label">Units to Order ${infoTip('Total units you should order now to cover the next 60 days of sales.')}</div><div class="kpi-sub">Est: ${fmtMoney(totalEstCost)}</div></div></div>
       </div>
       <div class="section"><div class="section-header">
         <h2 class="section-title">Purchase Order — <span id="replCount">${data.items.length} items</span></h2>
@@ -659,7 +659,14 @@ async function loadReplenishment() {
       </tr></thead><tbody id="replBody"></tbody></table></div></div>`;
 
     $('#replSearch')?.addEventListener('input', e => { searchT = e.target.value; render(); });
-    $$('[data-rfilter]').forEach(btn => btn.addEventListener('click', () => { $$('[data-rfilter]').forEach(b => b.classList.remove('active')); btn.classList.add('active'); filterP = btn.dataset.rfilter; render(); }));
+    $$('[data-rfilter]').forEach(btn => btn.addEventListener('click', () => {
+      $$('.filter-btn[data-rfilter]').forEach(b => b.classList.remove('active'));
+      // Highlight the matching toolbar button
+      const toolbarBtn = document.querySelector(`.filter-btn[data-rfilter="${btn.dataset.rfilter}"]`);
+      if (toolbarBtn) toolbarBtn.classList.add('active');
+      filterP = btn.dataset.rfilter;
+      render();
+    }));
     $('#exportReplBtn')?.addEventListener('click', () => exportCSV(data.items.map(i => ({ Priority: i.priority, SKU: i.sku, Product: i.product, Variant: i.variant, Vendor: i.vendor, Stock: i.available, DaysLeft: i.daysOfStock, MonthlySales: i.monthlyVelocity, OrderQty: i.suggestedQty })), 'reorder-list.csv'));
     render();
   } catch (err) { $('#content').innerHTML = `<div class="empty-state"><h3>Error</h3><p>${escHtml(err.message)}</p></div>`; }

@@ -318,8 +318,8 @@ function analyzeInventory(products, orders, config = {}) {
       else if (daysOfStock < 21 && dailyVelocity > 0) priority = 'WATCH';
 
       let velocityClass = 'NO SALES';
-      if (monthlyVelocity >= 20) velocityClass = 'FAST MOVER';
-      else if (monthlyVelocity >= 5) velocityClass = 'REGULAR';
+      if (monthlyVelocity >= 10) velocityClass = 'FAST MOVER';
+      else if (monthlyVelocity >= 3) velocityClass = 'REGULAR';
       else if (monthlyVelocity > 0) velocityClass = 'SLOW MOVER';
 
       // Extract ALERT ME metafield from product
@@ -675,9 +675,9 @@ app.get('/api/glossary', (req, res) => {
       none: { label: 'Active', description: 'Customer is active or single-purchaser (no churn risk calculated).' },
     },
     velocity: {
-      'FAST MOVER': { label: 'Fast Mover', description: 'Selling 20+ units/month. High demand \u2014 keep generous safety stock and reorder frequently.' },
-      'REGULAR': { label: 'Regular', description: 'Selling 5-19 units/month. Steady seller \u2014 standard reorder cycle works well.' },
-      'SLOW MOVER': { label: 'Slow Mover', description: 'Selling 1-4 units/month. Low demand \u2014 keep minimal stock, consider bundling or promotions.' },
+      'FAST MOVER': { label: 'Fast Mover', description: 'Selling 10+ units/month. High demand \u2014 keep generous safety stock and reorder frequently.' },
+      'REGULAR': { label: 'Regular', description: 'Selling 3-9 units/month. Steady seller \u2014 standard reorder cycle works well.' },
+      'SLOW MOVER': { label: 'Slow Mover', description: 'Selling 1-2 units/month. Low demand \u2014 keep minimal stock, consider bundling or promotions.' },
       'NO SALES': { label: 'No Sales', description: 'Zero sales in the reporting period. May be new listing, seasonal item, or dead stock to consider marking down.' },
     },
     priority: {

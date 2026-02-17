@@ -967,10 +967,20 @@ select.form-input { cursor: pointer; }
 
 /* ─── TABLE OVERFLOW FIX ─────────────────────── */
 
-.table-wrap { overflow-x: auto; }
+.table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
 .table-wrap table { min-width: 600px; }
 
 td, th { max-width: 300px; overflow: hidden; text-overflow: ellipsis; }
+
+/* Always show horizontal scrollbar on tables */
+.table-wrap::-webkit-scrollbar { height: 10px; }
+.table-wrap::-webkit-scrollbar-track { background: var(--bg-muted); border-radius: 5px; }
+.table-wrap::-webkit-scrollbar-thumb { background: var(--border); border-radius: 5px; min-width: 40px; }
+.table-wrap::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+
+/* Main content area scrollbar */
+.main-content { overflow-x: auto; }
+.section { min-width: 0; overflow-x: visible; }
 
 /* ─── ANALYTICS GRID ──────────────────────────── */
 
