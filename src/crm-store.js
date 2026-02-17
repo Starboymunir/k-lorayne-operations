@@ -42,6 +42,11 @@ const DEFAULT_STORE = {
     slaResolutionHours: 48,
     businessName: 'K.Lorayne Apparel',
     notifyEmail: '',
+    smtpHost: '',
+    smtpPort: 587,
+    smtpUser: '',
+    smtpPass: '',
+    emailFrom: '',
   },
 };
 
@@ -264,6 +269,42 @@ export function deleteSavedReply(id) {
 
 export function getCategories() {
   return store.categories;
+}
+
+export function addCategory(data) {
+  const cat = {
+    id: data.id || data.label.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/_+$/, ''),
+    label: data.label,
+    icon: data.icon || '🏷️',
+    color: data.color || '#8b8da0',
+  };
+  // Prevent duplicate IDs
+  if (store.categories.find(c => c.id === cat.id)) return null;
+  store.categories.push(cat);
+  save(store);
+  return cat;
+}
+
+export function updateCategory(id, updates) {
+  const cat = store.categories.find(c => c.id === id);
+  if (!cat) return null;
+  if (updates.label !== undefined) cat.label = updates.label;
+  if (updates.icon !== undefined) cat.icon = updates.icon;
+  if (updates.color !== undefined) cat.color = updates.color;
+  save(store);
+  return cat;
+}
+
+export function deleteCategory(id) {
+  // Don't delete 'general' — it's the fallback
+  if (id === 'general') return false;
+  const idx = store.categories.findIndex(c => c.id === id);
+  if (idx < 0) return false;
+  store.categories.splice(idx, 1);
+  // Move tickets in this category to 'general'
+  store.tickets.forEach(t => { if (t.category === id) t.category = 'general'; });
+  save(store);
+  return true;
 }
 
 // ─── SETTINGS ──────────────────────────────────

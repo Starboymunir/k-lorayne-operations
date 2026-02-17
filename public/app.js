@@ -994,13 +994,14 @@ async function loadTickets() {
     const cData = await cRes.json();
     _categories = cData.categories || [];
 
-    let filterStatus = 'active', searchTerm = '';
+    let filterStatus = 'active', filterCategory = '', searchTerm = '';
 
     function getFiltered() {
       let tickets = tData.tickets;
       if (searchTerm) { const s = searchTerm.toLowerCase(); tickets = tickets.filter(t => t.subject.toLowerCase().includes(s) || t.customerName.toLowerCase().includes(s) || (t.customerEmail||'').toLowerCase().includes(s) || t.id.toLowerCase().includes(s)); }
       if (filterStatus === 'active') tickets = tickets.filter(t => !['resolved', 'closed'].includes(t.status));
       else if (filterStatus !== 'all') tickets = tickets.filter(t => t.status === filterStatus);
+      if (filterCategory) tickets = tickets.filter(t => t.category === filterCategory);
       return tickets;
     }
 
@@ -1050,6 +1051,13 @@ async function loadTickets() {
         <div class="toolbar">
           <input type="text" class="search-input" id="ticketSearch" placeholder="Search by subject, customer, ticket ID...">
         </div>
+        <div class="category-filter-bar" id="catFilterBar">
+          <button class="cat-pill active" data-catf="">All Categories</button>
+          ${_categories.map(c => {
+            const cnt = tData.tickets.filter(t => t.category === c.id).length;
+            return `<button class="cat-pill" data-catf="${c.id}" style="--cat-color:${c.color}">${c.icon} ${c.label} <span class="cat-pill-count">${cnt}</span></button>`;
+          }).join('')}
+        </div>
         <div id="ticketList" class="ticket-list"></div>
       </div>
     `;
@@ -1058,6 +1066,10 @@ async function loadTickets() {
     $$('[data-tfilter]').forEach(el => el.addEventListener('click', () => {
       $$('[data-tfilter]').forEach(e2 => e2.classList.remove('active-filter'));
       el.classList.add('active-filter'); filterStatus = el.dataset.tfilter; render();
+    }));
+    $$('[data-catf]').forEach(el => el.addEventListener('click', () => {
+      $$('[data-catf]').forEach(e2 => e2.classList.remove('active'));
+      el.classList.add('active'); filterCategory = el.dataset.catf; render();
     }));
     $('#newTicketBtn').addEventListener('click', () => showNewTicketModal());
     render();
@@ -1115,9 +1127,15 @@ function showNewTicketModal(customerId, customerName, customerEmail) {
 
 async function loadTicketDetail(ticketId) {
   try {
-    const [tRes, srRes] = await Promise.all([fetch(`/api/tickets/${ticketId}`), fetch('/api/crm/saved-replies')]);
+    const [tRes, srRes, catRes, emailRes] = await Promise.all([
+      fetch(`/api/tickets/${ticketId}`), fetch('/api/crm/saved-replies'),
+      fetch('/api/crm/categories'), fetch('/api/email/status'),
+    ]);
     const ticket = await tRes.json();
     const srData = await srRes.json();
+    const catData = await catRes.json();
+    const emailStatus = await emailRes.json();
+    _categories = catData.categories || [];
     if (ticket.error) throw new Error(ticket.error);
 
     // SLA calculation
@@ -1170,8 +1188,13 @@ async function loadTicketDetail(ticketId) {
               <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
                 <select id="noteType" class="form-input" style="width:auto;"><option value="reply">Customer Reply</option><option value="internal">Internal Note</option></select>
                 <select id="savedReplySelect" class="form-input" style="width:auto;"><option value="">Insert saved reply...</option>${srData.replies.map(r => `<option value="${r.id}">${r.title}</option>`).join('')}</select>
+                <label class="email-toggle" id="emailToggleWrap" style="${emailStatus.configured && ticket.customerEmail ? '' : 'display:none;'}">
+                  <input type="checkbox" id="sendEmailCb" checked>
+                  <span>📧 Send email</span>
+                </label>
                 <button class="btn btn-primary" id="addNoteBtn">Send</button>
               </div>
+              ${!emailStatus.configured ? '<p style="font-size:11px;color:var(--text-muted);margin-top:6px">📧 Email not configured — <a href="#" onclick="navigateTo(\'settings\');return false;" style="color:var(--accent)">set up SMTP in Settings</a></p>' : ''}
             </div>
           </div>
         </div>
@@ -1200,6 +1223,9 @@ async function loadTicketDetail(ticketId) {
                 <select id="prioritySelect" class="form-input">
                   ${['low','medium','high','urgent'].map(p => `<option value="${p}" ${ticket.priority === p ? 'selected' : ''}>${p.charAt(0).toUpperCase()+p.slice(1)}</option>`).join('')}
                 </select>
+                <select id="categorySelect" class="form-input">
+                  ${_categories.map(c => `<option value="${c.id}" ${ticket.category === c.id ? 'selected' : ''}>${c.icon} ${c.label}</option>`).join('')}
+                </select>
                 <button class="btn" id="updateTicketBtn" style="width:100%">Update Ticket</button>
                 <button class="btn btn-danger" id="deleteTicketBtn">Delete Ticket</button>
               </div>
@@ -1213,22 +1239,36 @@ async function loadTicketDetail(ticketId) {
 
     $('#savedReplySelect').addEventListener('change', e => {
       const reply = srData.replies.find(r => r.id === e.target.value);
-      if (reply) { let body = reply.body.replace('{name}', ticket.customerName || 'there'); $('#noteText').value = body; $('#noteType').value = 'reply'; }
+      if (reply) { let body = reply.body.replace('{name}', ticket.customerName || 'there'); $('#noteText').value = body; $('#noteType').value = 'reply'; updateEmailToggle(); }
       e.target.value = '';
     });
+
+    // Show/hide email toggle based on note type
+    function updateEmailToggle() {
+      const wrap = document.getElementById('emailToggleWrap');
+      if (!wrap) return;
+      wrap.style.display = ($('#noteType').value === 'reply' && emailStatus.configured && ticket.customerEmail) ? '' : 'none';
+    }
+    $('#noteType').addEventListener('change', updateEmailToggle);
 
     $('#addNoteBtn').addEventListener('click', async () => {
       const text = $('#noteText').value.trim();
       if (!text) return;
-      await fetch(`/api/tickets/${ticketId}/notes`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text, type: $('#noteType').value }) });
+      const noteType = $('#noteType').value;
+      const sendEmail = noteType === 'reply' && emailStatus.configured && ticket.customerEmail && ($('#sendEmailCb')?.checked ?? true);
+      const payload = { text, type: noteType, sendEmail };
+      const noteRes = await fetch(`/api/tickets/${ticketId}/notes`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+      const noteResult = await noteRes.json();
       const r = await fetch(`/api/tickets/${ticketId}`);
       Object.assign(ticket, await r.json());
       renderTimeline(); $('#noteText').value = '';
-      toast('Note added', 'success');
+      if (noteResult.emailResult?.success) toast('Reply sent & emailed to customer', 'success');
+      else if (noteResult.emailResult?.error) toast('Note added but email failed: ' + noteResult.emailResult.error, 'error');
+      else toast('Note added', 'success');
     });
 
     $('#updateTicketBtn').addEventListener('click', async () => {
-      await fetch(`/api/tickets/${ticketId}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: $('#statusSelect').value, priority: $('#prioritySelect').value }) });
+      await fetch(`/api/tickets/${ticketId}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: $('#statusSelect').value, priority: $('#prioritySelect').value, category: $('#categorySelect').value }) });
       toast('Ticket updated', 'success');
       navigateTo('ticket-detail', ticketId);
     });
@@ -1639,12 +1679,13 @@ async function loadAnalytics() {
 
 async function loadSettings() {
   try {
-    const [settingsRes, repliesRes, catsRes] = await Promise.all([
-      fetch('/api/crm/settings'), fetch('/api/crm/saved-replies'), fetch('/api/crm/categories'),
+    const [settingsRes, repliesRes, catsRes, emailRes] = await Promise.all([
+      fetch('/api/crm/settings'), fetch('/api/crm/saved-replies'), fetch('/api/crm/categories'), fetch('/api/email/status'),
     ]);
     const settings = await settingsRes.json();
     const repliesData = await repliesRes.json();
     const catsData = await catsRes.json();
+    const emailStatus = await emailRes.json();
 
     $('#content').innerHTML = `
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
@@ -1660,6 +1701,30 @@ async function loadSettings() {
         </div>
 
         <div class="section">
+          <div class="section-header">
+            <h2 class="section-title">📧 Email Configuration</h2>
+            <span class="badge badge-${emailStatus.configured ? 'ok' : 'critical'}">${emailStatus.configured ? 'Connected' : 'Not Configured'}</span>
+          </div>
+          <div style="padding:20px">
+            <p style="font-size:12px;color:var(--text-muted);margin:0 0 16px;">Configure SMTP to send customer replies via email. Customer replies from tickets will be sent automatically.</p>
+            <div class="form-group"><label>SMTP Host</label><input type="text" id="sSmtpHost" class="form-input" value="${escHtml(settings.smtpHost || '')}" placeholder="e.g. smtp.gmail.com, smtp.office365.com"></div>
+            <div class="form-row">
+              <div class="form-group"><label>SMTP Port</label><input type="number" id="sSmtpPort" class="form-input" value="${settings.smtpPort || 587}" placeholder="587"></div>
+              <div class="form-group"><label>From Email</label><input type="email" id="sEmailFrom" class="form-input" value="${escHtml(settings.emailFrom || '')}" placeholder="contact@kloapparel.com"></div>
+            </div>
+            <div class="form-group"><label>SMTP Username</label><input type="text" id="sSmtpUser" class="form-input" value="${escHtml(settings.smtpUser || '')}" placeholder="your-email@provider.com"></div>
+            <div class="form-group"><label>SMTP Password / App Password</label><input type="password" id="sSmtpPass" class="form-input" value="${escHtml(settings.smtpPass || '')}" placeholder="••••••••"></div>
+            <div style="display:flex;gap:8px;">
+              <button class="btn btn-primary" id="saveEmailBtn">Save Email Settings</button>
+              <button class="btn" id="testEmailBtn" ${!settings.smtpHost ? 'disabled' : ''}>Send Test Email</button>
+            </div>
+            <div id="emailTestResult" style="margin-top:10px;font-size:12px;"></div>
+          </div>
+        </div>
+      </div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:16px;">
+        <div class="section">
           <div class="section-header"><h2 class="section-title">Ticket Categories</h2></div>
           <div style="padding:16px">
             ${(catsData.categories || []).map(c => `
@@ -1667,26 +1732,34 @@ async function loadSettings() {
                 <span style="font-size:18px">${c.icon}</span>
                 <span style="flex:1">${c.label}</span>
                 <span class="badge" style="background:${c.color}22;color:${c.color}">${c.id}</span>
+                ${c.id !== 'general' ? `<button class="btn btn-sm btn-danger" data-del-cat="${c.id}" style="padding:2px 8px;font-size:11px">×</button>` : ''}
+              </div>
+            `).join('')}
+            <div style="margin-top:12px;display:flex;gap:8px;">
+              <input type="text" id="newCatIcon" class="form-input" style="width:50px;text-align:center" placeholder="🏷️" maxlength="4">
+              <input type="text" id="newCatLabel" class="form-input" style="flex:1" placeholder="New category name">
+              <input type="color" id="newCatColor" value="#8b8da0" style="width:40px;height:36px;padding:2px;border:1px solid var(--border);border-radius:6px;background:var(--bg);cursor:pointer">
+              <button class="btn btn-sm" id="addCatBtn">+ Add</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="section">
+          <div class="section-header">
+            <h2 class="section-title">Saved Reply Templates (${repliesData.replies.length})</h2>
+            <button class="btn btn-sm" id="addReplyBtn">+ Add Reply</button>
+          </div>
+          <div style="padding:16px;max-height:400px;overflow-y:auto;">
+            ${repliesData.replies.map(r => `
+              <div class="cat-setting-row" style="flex-wrap:wrap;">
+                <strong style="font-size:13px">${escHtml(r.title)}</strong>
+                <span class="badge" style="font-size:10px;margin-left:auto">${escHtml(r.category)}</span>
+                <button class="btn btn-sm btn-danger" data-del-reply="${r.id}" style="padding:2px 8px;font-size:11px">×</button>
+                <div style="width:100%;font-size:11px;color:var(--text-dim);margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escHtml(r.body.substring(0, 100))}...</div>
               </div>
             `).join('')}
           </div>
         </div>
-      </div>
-
-      <div class="section" style="margin-top:16px">
-        <div class="section-header">
-          <h2 class="section-title">Saved Reply Templates (${repliesData.replies.length})</h2>
-          <button class="btn btn-sm" id="addReplyBtn">+ Add Reply</button>
-        </div>
-        <div class="table-wrap"><table><thead><tr><th>Title</th><th>Category</th><th style="width:50%">Preview</th><th>Action</th></tr></thead>
-        <tbody id="repliesBody">
-          ${repliesData.replies.map(r => `<tr>
-            <td><strong>${escHtml(r.title)}</strong></td>
-            <td>${escHtml(r.category)}</td>
-            <td style="font-size:12px;color:var(--text-dim);max-width:400px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escHtml(r.body.substring(0, 80))}...</td>
-            <td><button class="btn btn-sm btn-danger" data-del-reply="${r.id}">Delete</button></td>
-          </tr>`).join('')}
-        </tbody></table></div>
       </div>
     `;
 
@@ -1701,6 +1774,53 @@ async function loadSettings() {
         }),
       });
       toast('Settings saved', 'success');
+    });
+
+    // Email settings save
+    $('#saveEmailBtn').addEventListener('click', async () => {
+      const emailSettings = {
+        smtpHost: $('#sSmtpHost').value.trim(),
+        smtpPort: parseInt($('#sSmtpPort').value) || 587,
+        smtpUser: $('#sSmtpUser').value.trim(),
+        smtpPass: $('#sSmtpPass').value,
+        emailFrom: $('#sEmailFrom').value.trim(),
+      };
+      await fetch('/api/crm/settings', {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(emailSettings),
+      });
+      toast('Email settings saved', 'success');
+      navigateTo('settings');
+    });
+
+    // Test email
+    $('#testEmailBtn').addEventListener('click', async () => {
+      const resultEl = document.getElementById('emailTestResult');
+      const testTo = $('#sEmailFrom').value.trim() || $('#sSmtpUser').value.trim();
+      if (!testTo) { resultEl.innerHTML = '<span style="color:var(--red)">Enter an email address first</span>'; return; }
+      resultEl.innerHTML = '<span style="color:var(--text-muted)">Sending test email...</span>';
+      try {
+        const r = await fetch('/api/email/test', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ to: testTo }) });
+        const result = await r.json();
+        if (result.success) resultEl.innerHTML = '<span style="color:var(--green)">✓ Test email sent successfully! Check your inbox.</span>';
+        else resultEl.innerHTML = `<span style="color:var(--red)">✗ Failed: ${escHtml(result.error)}</span>`;
+      } catch (err) { resultEl.innerHTML = `<span style="color:var(--red)">✗ Error: ${escHtml(err.message)}</span>`; }
+    });
+
+    // Category management
+    $$('[data-del-cat]').forEach(btn => btn.addEventListener('click', async () => {
+      if (!confirm('Delete this category? Tickets will be moved to General.')) return;
+      await fetch(`/api/crm/categories/${btn.dataset.delCat}`, { method: 'DELETE' });
+      toast('Category deleted', 'success'); navigateTo('settings');
+    }));
+
+    $('#addCatBtn').addEventListener('click', async () => {
+      const label = $('#newCatLabel').value.trim();
+      if (!label) return;
+      const icon = $('#newCatIcon').value.trim() || '🏷️';
+      const color = $('#newCatColor').value;
+      await fetch('/api/crm/categories', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ label, icon, color }) });
+      toast('Category added', 'success'); navigateTo('settings');
     });
 
     $$('[data-del-reply]').forEach(btn => btn.addEventListener('click', async () => {

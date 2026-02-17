@@ -11,10 +11,12 @@ import {
   getCustomerNotes, addCustomerNote,
   getCustomerTags, setCustomerTags,
   getSavedReplies, addSavedReply, deleteSavedReply,
-  getCategories, getCrmStats,
+  getCategories, addCategory, updateCategory, deleteCategory,
+  getCrmStats,
   getSettings, updateSettings,
   logActivity, getActivityLog,
 } from './crm-store.js';
+import { configureEmail, isEmailConfigured, sendEmail, sendTestEmail } from './email.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -1326,12 +1328,36 @@ app.delete('/api/tickets/:id', (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.post('/api/tickets/:id/notes', (req, res) => {
+app.post('/api/tickets/:id/notes', async (req, res) => {
   try {
     const note = addTicketNote(req.params.id, req.body);
     if (!note) return res.status(404).json({ error: 'Ticket not found' });
     logActivity(req.body.author || 'Krystle', 'note_added', `Added note to ticket ${req.params.id}`, { ticketId: req.params.id });
-    res.status(201).json(note);
+
+    // If it's a customer reply and email is configured, send the email
+    let emailResult = null;
+    if (req.body.type === 'reply' && req.body.sendEmail !== false) {
+      const ticket = getTicketById(req.params.id);
+      if (ticket && ticket.customerEmail && isEmailConfigured()) {
+        const settings = getSettings();
+        emailResult = await sendEmail(
+          ticket.customerEmail,
+          ticket.subject || 'Support Update',
+          req.body.text,
+          { ticketId: ticket.id, businessName: settings.businessName }
+        );
+        // Add a system note about the email
+        if (emailResult.success) {
+          addTicketNote(req.params.id, {
+            text: `📧 Email sent to ${ticket.customerEmail}`,
+            author: 'System',
+            type: 'system',
+          });
+        }
+      }
+    }
+
+    res.status(201).json({ ...note, emailResult });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -1368,6 +1394,56 @@ app.delete('/api/crm/saved-replies/:id', (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 app.get('/api/crm/categories', (req, res) => res.json({ categories: getCategories() }));
+app.post('/api/crm/categories', (req, res) => {
+  try {
+    const cat = addCategory(req.body);
+    if (!cat) return res.status(409).json({ error: 'Category ID already exists' });
+    logActivity('Krystle', 'category_added', `Added category: ${cat.label}`);
+    res.status(201).json(cat);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+app.patch('/api/crm/categories/:id', (req, res) => {
+  try {
+    const cat = updateCategory(req.params.id, req.body);
+    if (!cat) return res.status(404).json({ error: 'Category not found' });
+    logActivity('Krystle', 'category_updated', `Updated category: ${cat.label}`);
+    res.json(cat);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+app.delete('/api/crm/categories/:id', (req, res) => {
+  try {
+    const ok = deleteCategory(req.params.id);
+    if (!ok) return res.status(400).json({ error: 'Cannot delete this category' });
+    logActivity('Krystle', 'category_deleted', `Deleted category: ${req.params.id}`);
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ─── EMAIL ─────────────────────────────────────
+
+app.get('/api/email/status', (req, res) => {
+  res.json({ configured: isEmailConfigured() });
+});
+
+app.post('/api/email/test', async (req, res) => {
+  try {
+    const { to } = req.body;
+    if (!to) return res.status(400).json({ error: 'Recipient email required' });
+    const result = await sendTestEmail(to);
+    res.json(result);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/email/send', async (req, res) => {
+  try {
+    const { to, subject, body, ticketId } = req.body;
+    if (!to || !subject || !body) return res.status(400).json({ error: 'Missing to, subject, or body' });
+    const settings = getSettings();
+    const result = await sendEmail(to, subject, body, { ticketId, businessName: settings.businessName });
+    if (result.success) logActivity('Krystle', 'email_sent', `Sent email to ${to}`, { ticketId });
+    res.json(result);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
 
 // ─── CRM: STATS / SETTINGS / ACTIVITY ─────────
 
@@ -1380,6 +1456,10 @@ app.get('/api/crm/settings', (req, res) => res.json(getSettings()));
 app.patch('/api/crm/settings', (req, res) => {
   try {
     const settings = updateSettings(req.body);
+    // Reconfigure email if SMTP settings changed
+    if (req.body.smtpHost !== undefined || req.body.smtpUser !== undefined || req.body.smtpPass !== undefined) {
+      configureEmail(settings);
+    }
     logActivity('Krystle', 'settings_updated', 'Updated CRM settings');
     res.json(settings);
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -1453,6 +1533,14 @@ app.listen(PORT, () => {
   console.log(`║  http://localhost:${PORT}                        ║`);
   console.log(`╚══════════════════════════════════════════════╝\n`);
   console.log(`  Store: ${getShopDomain()}`);
+  // Initialize email transporter from saved settings
+  const settings = getSettings();
+  if (settings.smtpHost && settings.smtpUser) {
+    const ok = configureEmail(settings);
+    console.log(`  Email: ${ok ? '✓ SMTP configured' : '✗ SMTP not ready'}`);
+  } else {
+    console.log(`  Email: Not configured (set SMTP in Settings)`);
+  }
   console.log(`  Server ready — fetching data in background...\n`);
   // Fetch data in background so the server starts immediately
   getData().then(() => console.log('  ✓ All data loaded!\n')).catch(err => console.error('[server] Pre-warm failed:', err));
