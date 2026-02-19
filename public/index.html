@@ -4,13 +4,15 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>K.Lorayne Operations</title>
+  <link rel="icon" type="image/svg+xml" href="/logo.svg">
+  <link rel="apple-touch-icon" href="/logo.svg">
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
   <!-- SIDEBAR -->
   <aside class="sidebar" id="sidebar">
     <div class="sidebar-brand">
-      <div class="brand-icon">KL</div>
+      <img src="/logo.svg" alt="K.Lorayne" class="brand-logo">
       <span class="brand-name">K.Lorayne</span>
     </div>
 
@@ -56,9 +58,19 @@
         <span>Tickets</span>
         <span class="nav-badge" id="ticketBadge"></span>
       </a>
+      <a href="#" class="nav-item" data-page="returns">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
+        <span>Returns</span>
+      </a>
       <a href="#" class="nav-item" data-page="analytics">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
         <span>Analytics</span>
+      </a>
+
+      <div class="nav-section-label">Inventory Tools</div>
+      <a href="#" class="nav-item" data-page="sku-audit">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>
+        <span>SKU Audit</span>
       </a>
       <a href="#" class="nav-item" data-page="cleanup">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 4 21 4"/><path d="M19 4v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V4M10 9v6M14 9v6"/></svg>

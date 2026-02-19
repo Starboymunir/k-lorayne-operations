@@ -29,10 +29,12 @@ const DEFAULT_STORE = {
   categories: [
     { id: 'order_status', label: 'Order Status', icon: '📦', color: '#3b82f6' },
     { id: 'returns', label: 'Returns & Exchanges', icon: '🔄', color: '#f97316' },
+    { id: 'chargebacks', label: 'Chargebacks', icon: '⚠', color: '#dc2626' },
     { id: 'damage', label: 'Damaged Items', icon: '💔', color: '#ef4444' },
     { id: 'sizing', label: 'Sizing Questions', icon: '📏', color: '#8b5cf6' },
     { id: 'shipping', label: 'Shipping Issues', icon: '🚚', color: '#eab308' },
     { id: 'billing', label: 'Billing / Payment', icon: '💳', color: '#22c55e' },
+    { id: 'social_media', label: 'Social Media', icon: '📱', color: '#e91e8b' },
     { id: 'general', label: 'General Inquiry', icon: '💬', color: '#8b8da0' },
     { id: 'vip', label: 'VIP Follow-up', icon: '⭐', color: '#f59e0b' },
   ],
@@ -114,6 +116,7 @@ export function getTickets(filters = {}) {
   if (filters.customerId) tickets = tickets.filter(t => t.customerId === filters.customerId);
   if (filters.assignee) tickets = tickets.filter(t => t.assignee === filters.assignee);
   if (filters.orderId) tickets = tickets.filter(t => t.orderId === filters.orderId);
+  if (filters.channel) tickets = tickets.filter(t => (t.channel || 'shopify') === filters.channel);
   if (filters.search) {
     const s = filters.search.toLowerCase();
     tickets = tickets.filter(t =>
@@ -147,6 +150,7 @@ export function createTicket(data) {
     assignee: data.assignee || store.settings.autoAssignee,
     orderId: data.orderId || null,
     orderName: data.orderName || null,
+    channel: data.channel || 'shopify',   // shopify | email | social_fb | social_ig | social_tiktok | manual
     notes: [],
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),

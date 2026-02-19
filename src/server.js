@@ -1239,6 +1239,144 @@ app.post('/api/cleanup-action', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// ─── SKU AUDIT ─────────────────────────────────
+
+app.get('/api/sku-audit', async (req, res) => {
+  try {
+    const { products } = await getData();
+    const missingSku = [];
+    const duplicateSkus = new Map();
+    const allSkus = new Map();
+    const multiColorway = [];
+
+    for (const product of products) {
+      const variants = product.variants.edges.map(e => e.node);
+      
+      // Check for missing SKUs
+      for (const v of variants) {
+        if (!v.sku || v.sku.trim() === '') {
+          missingSku.push({
+            productId: product.id,
+            variantId: v.id,
+            product: product.title,
+            variant: v.title,
+            price: v.price,
+            available: v.inventoryItem?.inventoryLevels?.edges?.reduce((s, l) => {
+              const q = l.node.quantities?.find(q => q.name === 'available');
+              return s + (q?.quantity || 0);
+            }, 0) || 0,
+            vendor: product.vendor || '',
+          });
+        } else {
+          // Track all SKUs for duplicate detection
+          const sku = v.sku.trim().toUpperCase();
+          if (!allSkus.has(sku)) allSkus.set(sku, []);
+          allSkus.get(sku).push({
+            productId: product.id,
+            variantId: v.id,
+            product: product.title,
+            variant: v.title,
+            sku: v.sku,
+          });
+        }
+      }
+
+      // Check for multi-colorway issues: multiple images on product with only 1 variant
+      // or multiple unrelated images that suggest different colorways lumped together
+      const imageCount = product.images?.edges?.length || 0;
+      const variantCount = variants.length;
+      if (imageCount > 3 && variantCount === 1) {
+        multiColorway.push({
+          productId: product.id,
+          product: product.title,
+          imageCount,
+          variantCount,
+          vendor: product.vendor || '',
+        });
+      }
+    }
+
+    // Find actual duplicates (same SKU on different products)
+    const duplicates = [];
+    allSkus.forEach((items, sku) => {
+      const uniqueProducts = new Set(items.map(i => i.productId));
+      if (uniqueProducts.size > 1) {
+        duplicates.push({ sku, items });
+      }
+    });
+
+    // Generate suggested SKUs for items missing them
+    const suggestedSkus = missingSku.map(item => {
+      const brandPrefix = 'KLO';
+      const productWords = item.product.replace(/[^a-zA-Z0-9 ]/g, '').split(' ').filter(Boolean);
+      const productCode = productWords.slice(0, 2).map(w => w.substring(0, 3).toUpperCase()).join('');
+      const variantCode = item.variant !== 'Default Title' 
+        ? '-' + item.variant.replace(/[^a-zA-Z0-9]/g, '').substring(0, 4).toUpperCase() 
+        : '';
+      const seq = String(missingSku.indexOf(item) + 1).padStart(3, '0');
+      return {
+        ...item,
+        suggestedSku: `${brandPrefix}-${productCode}${variantCode}-${seq}`,
+      };
+    });
+
+    res.json({
+      missingSkuCount: missingSku.length,
+      duplicateSkuCount: duplicates.length,
+      multiColorwayCount: multiColorway.length,
+      totalProducts: products.length,
+      totalVariants: products.reduce((s, p) => s + p.variants.edges.length, 0),
+      missingSku: suggestedSkus,
+      duplicates,
+      multiColorway,
+    });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/sku-update', async (req, res) => {
+  try {
+    const { updates } = req.body; // [{ variantId, sku }]
+    if (!Array.isArray(updates) || updates.length === 0) {
+      return res.status(400).json({ error: 'No updates provided' });
+    }
+    
+    const results = { success: 0, failed: 0, errors: [] };
+    
+    for (const update of updates) {
+      try {
+        const mutation = `
+          mutation productVariantUpdate($input: ProductVariantInput!) {
+            productVariantUpdate(input: $input) {
+              productVariant { id sku }
+              userErrors { field message }
+            }
+          }
+        `;
+        const result = await shopifyGraphQL(mutation, {
+          input: { id: update.variantId, sku: update.sku }
+        });
+        
+        if (result.data?.productVariantUpdate?.userErrors?.length > 0) {
+          results.errors.push(`${update.variantId}: ${result.data.productVariantUpdate.userErrors[0].message}`);
+          results.failed++;
+        } else {
+          results.success++;
+        }
+      } catch (err) {
+        results.errors.push(`${update.variantId}: ${err.message}`);
+        results.failed++;
+      }
+    }
+
+    // Invalidate cache after SKU updates
+    if (results.success > 0) {
+      cache = { products: null, orders: null, customers: null, lastFetch: 0 };
+    }
+
+    res.json(results);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // ─── ALERTS ────────────────────────────────────
 
 app.get('/api/alerts', async (req, res) => {
@@ -1250,7 +1388,61 @@ app.get('/api/alerts', async (req, res) => {
         const order = { CRITICAL: 0, URGENT: 1, REORDER: 2, WATCH: 3 };
         return (order[a.priority] || 9) - (order[b.priority] || 9);
       });
-    res.json({ alerts, total: alerts.length });
+    
+    // Summary counts for the enhanced alerts page
+    const critical = alerts.filter(a => a.priority === 'CRITICAL').length;
+    const urgent = alerts.filter(a => a.priority === 'URGENT').length;
+    const reorder = alerts.filter(a => a.priority === 'REORDER').length;
+    const watch = alerts.filter(a => a.priority === 'WATCH').length;
+    const totalRevAtRisk = alerts.filter(a => a.priority === 'CRITICAL')
+      .reduce((s, a) => s + (a.price * a.monthlyVelocity), 0);
+
+    res.json({ 
+      alerts, total: alerts.length,
+      summary: { critical, urgent, reorder, watch, totalRevAtRisk },
+    });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Send alert email notification for low stock items
+app.post('/api/alerts/notify', async (req, res) => {
+  try {
+    if (!isEmailConfigured()) {
+      return res.status(400).json({ error: 'Email not configured. Set up SMTP in Settings first.' });
+    }
+    const settings = getSettings();
+    const { products, orders } = await getData();
+    const analysis = analyzeInventory(products, orders);
+    const alerts = analysis.variants.filter(v => v.priority !== 'OK')
+      .sort((a, b) => {
+        const order = { CRITICAL: 0, URGENT: 1, REORDER: 2, WATCH: 3 };
+        return (order[a.priority] || 9) - (order[b.priority] || 9);
+      });
+    
+    const critical = alerts.filter(a => a.priority === 'CRITICAL');
+    const urgent = alerts.filter(a => a.priority === 'URGENT');
+
+    const alertRows = [...critical, ...urgent].map(a => 
+      `<tr><td style="padding:6px 12px;border:1px solid #eee">${a.product}</td><td style="padding:6px 12px;border:1px solid #eee">${a.variant}</td><td style="padding:6px 12px;border:1px solid #eee;font-family:monospace">${a.sku || '—'}</td><td style="padding:6px 12px;border:1px solid #eee;text-align:right;font-weight:bold;color:${a.available <= 0 ? '#dc2626' : '#ea580c'}">${a.available}</td><td style="padding:6px 12px;border:1px solid #eee">${a.priority}</td></tr>`
+    ).join('');
+
+    const html = `
+      <div style="font-family:Arial,sans-serif;max-width:700px;margin:0 auto">
+        <h2 style="color:#1a1a2e">⚠ K.Lorayne Inventory Alert</h2>
+        <p>There are <strong>${critical.length} CRITICAL</strong> and <strong>${urgent.length} URGENT</strong> low-stock alerts that need your attention.</p>
+        <table style="width:100%;border-collapse:collapse;margin:16px 0">
+          <thead><tr style="background:#f5f5f5"><th style="padding:8px 12px;border:1px solid #eee;text-align:left">Product</th><th style="padding:8px 12px;border:1px solid #eee;text-align:left">Variant</th><th style="padding:8px 12px;border:1px solid #eee;text-align:left">SKU</th><th style="padding:8px 12px;border:1px solid #eee;text-align:right">Stock</th><th style="padding:8px 12px;border:1px solid #eee">Priority</th></tr></thead>
+          <tbody>${alertRows}</tbody>
+        </table>
+        <p style="color:#666;font-size:13px">Generated ${new Date().toLocaleString()} by K.Lorayne Operations</p>
+      </div>
+    `;
+
+    const to = settings.notifyEmail || settings.smtpUser || 'contact@kloapparel.com';
+    const result = await sendEmail(to, `⚠ Inventory Alert: ${critical.length} Critical, ${urgent.length} Urgent`, html);
+    
+    logActivity('system', 'alert_sent', `Low stock alert sent to ${to} (${critical.length} critical, ${urgent.length} urgent)`);
+    res.json({ success: true, sentTo: to, critical: critical.length, urgent: urgent.length });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -1308,6 +1500,108 @@ app.get('/api/orders', async (req, res) => {
       totalRefunds: totalRefunds.toFixed(2),
       avgOrderValue: avgOrderValue.toFixed(2),
       financialBreakdown, fulfillmentBreakdown,
+    });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ─── RETURNS & CHARGEBACKS ─────────────────────
+
+app.get('/api/returns', async (req, res) => {
+  try {
+    const { orders } = await getData();
+    const tickets = getTickets({});
+
+    const returns = [];
+    const chargebacks = [];
+
+    for (const order of orders) {
+      const refunded = parseFloat(order.totalRefundedSet?.shopMoney?.amount || 0);
+      const total = parseFloat(order.totalPriceSet?.shopMoney?.amount || 0);
+      
+      // Find linked tickets for this order
+      const linkedTickets = tickets.filter(t => t.orderId === order.id);
+
+      if (order.cancelledAt) {
+        returns.push({
+          type: 'cancellation',
+          orderId: order.id,
+          orderName: order.name,
+          createdAt: order.createdAt,
+          cancelledAt: order.cancelledAt,
+          cancelReason: order.cancelReason || 'Not specified',
+          total,
+          refunded,
+          customer: order.customer?.displayName || 'Guest',
+          customerEmail: order.customer?.email || '',
+          customerId: order.customer?.id || null,
+          financial: order.displayFinancialStatus,
+          hasTicket: linkedTickets.length > 0,
+          ticketId: linkedTickets[0]?.id || null,
+          ticketStatus: linkedTickets[0]?.status || null,
+        });
+      } else if (refunded > 0) {
+        const isPartial = refunded < total;
+        returns.push({
+          type: isPartial ? 'partial_refund' : 'full_refund',
+          orderId: order.id,
+          orderName: order.name,
+          createdAt: order.createdAt,
+          cancelledAt: null,
+          cancelReason: null,
+          total,
+          refunded,
+          customer: order.customer?.displayName || 'Guest',
+          customerEmail: order.customer?.email || '',
+          customerId: order.customer?.id || null,
+          financial: order.displayFinancialStatus,
+          hasTicket: linkedTickets.length > 0,
+          ticketId: linkedTickets[0]?.id || null,
+          ticketStatus: linkedTickets[0]?.status || null,
+          items: order.lineItems.edges.map(li => ({
+            title: li.node.title, quantity: li.node.quantity, sku: li.node.sku,
+          })),
+        });
+      }
+
+      // Chargebacks: PAID orders marked as having disputes/chargebacks
+      if (order.displayFinancialStatus === 'REFUNDED' && !order.cancelledAt && refunded >= total) {
+        chargebacks.push({
+          type: 'chargeback',
+          orderId: order.id,
+          orderName: order.name,
+          createdAt: order.createdAt,
+          total,
+          refunded,
+          customer: order.customer?.displayName || 'Guest',
+          customerEmail: order.customer?.email || '',
+          customerId: order.customer?.id || null,
+          hasTicket: linkedTickets.length > 0,
+          ticketId: linkedTickets[0]?.id || null,
+          ticketStatus: linkedTickets[0]?.status || null,
+        });
+      }
+    }
+
+    returns.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+    chargebacks.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+
+    const totalRefunded = returns.reduce((s, r) => s + r.refunded, 0);
+    const withoutTicket = returns.filter(r => !r.hasTicket).length;
+    const openTickets = returns.filter(r => r.hasTicket && !['resolved', 'closed'].includes(r.ticketStatus)).length;
+
+    res.json({
+      returns,
+      chargebacks,
+      summary: {
+        totalReturns: returns.length,
+        totalChargebacks: chargebacks.length,
+        totalRefunded,
+        withoutTicket,
+        openTickets,
+        cancellations: returns.filter(r => r.type === 'cancellation').length,
+        partialRefunds: returns.filter(r => r.type === 'partial_refund').length,
+        fullRefunds: returns.filter(r => r.type === 'full_refund').length,
+      },
     });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -1451,6 +1745,7 @@ app.get('/api/tickets', (req, res) => {
       status: req.query.status, category: req.query.category,
       priority: req.query.priority, customerId: req.query.customerId,
       search: req.query.search, orderId: req.query.orderId,
+      channel: req.query.channel,
     });
     res.json({ tickets, total: tickets.length });
   } catch (err) { res.status(500).json({ error: err.message }); }

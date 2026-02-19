@@ -85,8 +85,10 @@ function navigateTo(page, params) {
     replenishment: 'Replenishment', alerts: 'Low-Stock Alerts',
     forecast: 'Inventory Forecast',
     orders: 'Orders', customers: 'Customers',
-    tickets: 'Support Tickets', analytics: 'Analytics & Reports',
-    cleanup: 'Inventory Cleanup', settings: 'Settings', 'customer-profile': 'Customer Profile',
+    tickets: 'Support Tickets', returns: 'Returns & Chargebacks',
+    analytics: 'Analytics & Reports',
+    'sku-audit': 'SKU Audit', cleanup: 'Inventory Cleanup',
+    settings: 'Settings', 'customer-profile': 'Customer Profile',
     'ticket-detail': 'Ticket Detail', 'order-detail': 'Order Detail',
   };
   $('#pageTitle').textContent = titles[page] || page;
@@ -97,8 +99,10 @@ function navigateTo(page, params) {
     replenishment: loadReplenishment, alerts: loadAlerts,
     forecast: loadForecast,
     orders: loadOrders, customers: loadCustomers,
-    tickets: loadTickets, analytics: loadAnalytics,
-    cleanup: loadCleanup, settings: loadSettings, 'customer-profile': () => loadCustomerProfile(params),
+    tickets: loadTickets, returns: loadReturns,
+    analytics: loadAnalytics,
+    'sku-audit': loadSkuAudit, cleanup: loadCleanup,
+    settings: loadSettings, 'customer-profile': () => loadCustomerProfile(params),
     'ticket-detail': () => loadTicketDetail(params),
     'order-detail': () => loadOrderDetail(params),
   };
@@ -160,6 +164,18 @@ function fulfillmentBadge(s) {
 function categoryLabel(id) {
   const cat = _categories.find(c => c.id === id);
   return cat ? `${cat.icon} ${cat.label}` : id;
+}
+function channelBadge(ch) {
+  const m = {
+    shopify: { icon: '🛍', label: 'Shopify', color: '#96bf48' },
+    email: { icon: '📧', label: 'Email', color: '#3b82f6' },
+    social_fb: { icon: '📘', label: 'Facebook', color: '#1877f2' },
+    social_ig: { icon: '📷', label: 'Instagram', color: '#e4405f' },
+    social_tiktok: { icon: '🎵', label: 'TikTok', color: '#000000' },
+    manual: { icon: '✏️', label: 'Manual', color: '#8b8da0' },
+  };
+  const c = m[ch] || m.shopify;
+  return `<span class="channel-badge" style="--ch-color:${c.color}" title="${c.label}">${c.icon}</span>`;
 }
 
 function exportCSV(data, filename) {
@@ -987,6 +1003,7 @@ async function loadAlerts() {
   try {
     const res = await fetch('/api/alerts');
     const data = await res.json();
+    const s = data.summary || {};
     const groups = [
       { key: 'CRITICAL', title: 'Critical — Order Immediately', color: 'var(--red)' },
       { key: 'URGENT', title: 'Urgent — Add to This Week\'s PO', color: 'var(--orange)' },
@@ -998,15 +1015,23 @@ async function loadAlerts() {
 
     const counts = groups.map(g => (byGroup[g.key] || []).length);
     $('#content').innerHTML = `
-      <div class="kpi-grid">
+      <div class="section-header" style="padding:0 0 16px;border:none;display:flex;justify-content:space-between;align-items:center">
+        <h2 class="section-title">Low-Stock Alerts (${data.total})</h2>
+        <div style="display:flex;gap:8px">
+          <button class="btn" id="alertExportBtn">📥 Export Alerts</button>
+          <button class="btn btn-primary" id="alertNotifyBtn">📧 Send Alert Email</button>
+        </div>
+      </div>
+      <div class="kpi-grid" style="grid-template-columns:repeat(5,1fr)">
         ${groups.map((g, i) => `<div class="kpi-card"><div class="kpi-icon" style="background:${g.color}22;color:${g.color}">!</div><div class="kpi-data"><div class="kpi-value" style="color:${g.color}">${counts[i]}</div><div class="kpi-label">${g.key}</div></div></div>`).join('')}
+        <div class="kpi-card"><div class="kpi-icon" style="background:var(--red-soft);color:var(--red)">💰</div><div class="kpi-data"><div class="kpi-value" style="color:var(--red);font-size:16px">${fmtMoney(s.totalRevAtRisk || 0)}</div><div class="kpi-label">Rev at Risk ${infoTip('Monthly revenue at risk from out-of-stock products with proven sales history.')}</div></div></div>
       </div>
       ${groups.map(g => {
         const items = byGroup[g.key] || [];
         if (!items.length) return '';
         const alertTips = { CRITICAL: 'These items are out of stock and have proven sales — they are losing you revenue right now.', URGENT: 'These items will run out within 14 days at current sales pace.', REORDER: 'Below safety stock — include in your next purchase order.', WATCH: 'Stock is getting low, keep an eye on these this week.' };
         return `<div class="section"><div class="section-header"><h2 class="section-title" style="color:${g.color}">${g.title} (${items.length}) ${infoTip(alertTips[g.key] || '')}</h2></div>
-          <div class="table-wrap"><table><thead><tr><th>Product</th><th>Variant</th><th>SKU</th><th style="text-align:right">Stock</th><th style="text-align:right">Days Left</th><th style="text-align:right">Monthly</th><th style="text-align:right">Order</th></tr></thead>
+          <div class="table-wrap"><table><thead><tr><th>Product</th><th>Variant</th><th>SKU</th><th style="text-align:right">Stock</th><th style="text-align:right">Days Left</th><th style="text-align:right">Monthly</th><th style="text-align:right">Order</th><th>Alert Me</th></tr></thead>
           <tbody>${items.map(a => `<tr>
             <td>${escHtml(a.product)}</td><td>${a.variant === 'Default Title' ? '—' : escHtml(a.variant)}</td>
             <td style="font-family:monospace;font-size:12px">${escHtml(a.sku) || '—'}</td>
@@ -1014,9 +1039,32 @@ async function loadAlerts() {
             <td style="text-align:right">${a.daysOfStock === 999 ? '∞' : a.daysOfStock}</td>
             <td style="text-align:right">${a.monthlyVelocity}/mo</td>
             <td style="text-align:right;font-weight:600;color:var(--accent)">${a.suggestedQty}</td>
+            <td>${a.alertMe ? '<span style="color:var(--green);font-weight:600">✓ Active</span>' : '<span style="color:var(--text-muted)">—</span>'}</td>
           </tr>`).join('')}</tbody></table></div></div>`;
       }).join('')}
       ${data.total === 0 ? '<div class="empty-state"><h3>All Clear!</h3><p>No low-stock alerts right now.</p></div>' : ''}`;
+
+    // Email notification button
+    document.getElementById('alertNotifyBtn')?.addEventListener('click', async () => {
+      const btn = document.getElementById('alertNotifyBtn');
+      btn.disabled = true; btn.textContent = 'Sending...';
+      try {
+        const r = await fetch('/api/alerts/notify', { method: 'POST' });
+        const result = await r.json();
+        if (result.error) { toast(result.error, 'error'); }
+        else { toast(`Alert email sent to ${result.sentTo} (${result.critical} critical, ${result.urgent} urgent)`, 'success'); }
+      } catch (err) { toast('Failed to send alert email', 'error'); }
+      btn.disabled = false; btn.textContent = '📧 Send Alert Email';
+    });
+
+    // Export alerts
+    document.getElementById('alertExportBtn')?.addEventListener('click', () => {
+      exportCSV(data.alerts.map(a => ({
+        Priority: a.priority, Product: a.product, Variant: a.variant, SKU: a.sku,
+        Stock: a.available, DaysLeft: a.daysOfStock, MonthlyVelocity: a.monthlyVelocity,
+        SuggestedOrder: a.suggestedQty, AlertMe: a.alertMe ? 'Yes' : 'No',
+      })), `low-stock-alerts-${new Date().toISOString().split('T')[0]}.csv`);
+    });
   } catch (err) { $('#content').innerHTML = `<div class="empty-state"><h3>Error</h3><p>${escHtml(err.message)}</p></div>`; }
 }
 
@@ -1325,6 +1373,7 @@ async function loadTickets() {
         <div class="ticket-card" onclick="navigateTo('ticket-detail', '${t.id}')">
           <div class="ticket-card-top">
             <span class="ticket-id">${t.id}</span>
+            ${channelBadge(t.channel || 'shopify')}
             ${statusBadge(t.status)} ${ticketPriorityBadge(t.priority)}
             <span class="ticket-category">${categoryLabel(t.category)}</span>
             ${t.orderName ? `<span class="ticket-order">🧾 ${t.orderName}</span>` : ''}
@@ -1402,6 +1451,7 @@ function showNewTicketModal(customerId, customerName, customerEmail) {
           <div class="form-group"><label>Category</label><select id="tkCategory" class="form-input">${_categories.map(c => `<option value="${c.id}">${c.icon} ${c.label}</option>`).join('')}</select></div>
           <div class="form-group"><label>Priority</label><select id="tkPriority" class="form-input"><option value="low">Low</option><option value="medium" selected>Medium</option><option value="high">High</option><option value="urgent">Urgent</option></select></div>
         </div>
+        <div class="form-group"><label>Channel</label><select id="tkChannel" class="form-input"><option value="shopify">🛍 Shopify</option><option value="email">📧 Email</option><option value="social_fb">📘 Facebook</option><option value="social_ig">📷 Instagram</option><option value="social_tiktok">🎵 TikTok</option><option value="manual">✏️ Manual</option></select></div>
         <div class="form-group"><label>Subject</label><input type="text" id="tkSubject" class="form-input" placeholder="Brief description"></div>
         <div class="form-group"><label>Description</label><textarea id="tkDesc" class="form-input form-textarea" placeholder="Full details..."></textarea></div>
       </div>
@@ -1422,6 +1472,7 @@ function showNewTicketModal(customerId, customerName, customerEmail) {
       customerEmail: overlay.querySelector('#tkEmail').value || '',
       category: overlay.querySelector('#tkCategory').value,
       priority: overlay.querySelector('#tkPriority').value,
+      channel: overlay.querySelector('#tkChannel').value,
       subject: overlay.querySelector('#tkSubject').value || '(no subject)',
       description: overlay.querySelector('#tkDesc').value || '',
     };
@@ -1517,6 +1568,7 @@ async function loadTicketDetail(ticketId) {
               <div class="detail-row"><span>Status</span>${statusBadge(ticket.status)}</div>
               <div class="detail-row"><span>Priority</span>${ticketPriorityBadge(ticket.priority)}</div>
               <div class="detail-row"><span>Category</span><span>${categoryLabel(ticket.category)}</span></div>
+              <div class="detail-row"><span>Channel</span>${channelBadge(ticket.channel || 'shopify')}</div>
               <div class="detail-row"><span>Assignee</span><span>${escHtml(ticket.assignee || '—')}</span></div>
               <div class="detail-row"><span>Created</span><span style="font-size:12px">${fmtDateTime(ticket.createdAt)}</span></div>
               ${ticket.resolvedAt ? `<div class="detail-row"><span>Resolved</span><span style="font-size:12px">${fmtDateTime(ticket.resolvedAt)}</span></div>` : ''}
@@ -1590,6 +1642,341 @@ async function loadTicketDetail(ticketId) {
       toast('Ticket deleted', 'success');
       navigateTo('tickets');
     });
+  } catch (err) { $('#content').innerHTML = `<div class="empty-state"><h3>Error</h3><p>${escHtml(err.message)}</p></div>`; }
+}
+
+// ════════════════════════════════════════════════
+//  RETURNS & CHARGEBACKS
+// ════════════════════════════════════════════════
+
+async function loadReturns() {
+  try {
+    const res = await fetch('/api/returns');
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
+
+    const s = data.summary;
+    let filterType = 'all', searchTerm = '';
+
+    function getFiltered() {
+      let items = data.returns;
+      if (filterType === 'cancellation') items = items.filter(r => r.type === 'cancellation');
+      else if (filterType === 'partial_refund') items = items.filter(r => r.type === 'partial_refund');
+      else if (filterType === 'full_refund') items = items.filter(r => r.type === 'full_refund');
+      else if (filterType === 'no_ticket') items = items.filter(r => !r.hasTicket);
+      if (searchTerm) {
+        const q = searchTerm.toLowerCase();
+        items = items.filter(r => r.orderName.toLowerCase().includes(q) || r.customer.toLowerCase().includes(q) || (r.customerEmail||'').toLowerCase().includes(q));
+      }
+      return items;
+    }
+
+    function render() {
+      const tbody = document.getElementById('returnsBody');
+      if (!tbody) return;
+      const items = getFiltered();
+      tbody.innerHTML = items.map(r => {
+        const typeLabel = { cancellation: '🚫 Cancelled', partial_refund: '🔄 Partial Refund', full_refund: '💰 Full Refund' }[r.type] || r.type;
+        const typeColor = { cancellation: 'var(--red)', partial_refund: 'var(--orange)', full_refund: 'var(--yellow)' }[r.type];
+        return `<tr>
+          <td><a href="#" onclick="navigateTo('order-detail','${r.orderId}');return false;" style="color:var(--accent);font-weight:600">${escHtml(r.orderName)}</a></td>
+          <td style="color:${typeColor};font-weight:600;font-size:12px">${typeLabel}</td>
+          <td>${escHtml(r.customer)}</td>
+          <td style="font-size:12px;color:var(--text-muted)">${escHtml(r.customerEmail || '')}</td>
+          <td style="text-align:right">${fmtMoney(r.total)}</td>
+          <td style="text-align:right;color:var(--red);font-weight:600">${fmtMoney(r.refunded)}</td>
+          <td style="font-size:12px">${r.cancelReason || '—'}</td>
+          <td style="font-size:12px">${fmtDate(r.createdAt)}</td>
+          <td>${r.hasTicket
+            ? `<a href="#" onclick="navigateTo('ticket-detail','${r.ticketId}');return false;" class="badge badge-${r.ticketStatus === 'resolved' || r.ticketStatus === 'closed' ? 'ok' : 'urgent'}">${r.ticketStatus || 'open'}</a>`
+            : `<button class="btn btn-sm btn-primary" onclick="createReturnTicket('${r.orderId}','${escHtml(r.orderName)}','${encodeURIComponent(r.customer)}','${encodeURIComponent(r.customerEmail||'')}','${r.customerId||''}','${r.type}',${r.refunded})">Create Ticket</button>`
+          }</td>
+        </tr>`;
+      }).join('');
+      document.getElementById('returnsCount').textContent = `${items.length} of ${data.returns.length}`;
+    }
+
+    $('#content').innerHTML = `
+      <div class="kpi-grid" style="grid-template-columns:repeat(4,1fr)">
+        <div class="kpi-card">
+          <div class="kpi-icon" style="background:var(--red-soft);color:var(--red)">🔄</div>
+          <div class="kpi-data"><div class="kpi-value" style="font-size:20px">${s.totalReturns}</div><div class="kpi-label">Total Returns</div></div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-icon" style="background:var(--orange-soft);color:var(--orange)">💰</div>
+          <div class="kpi-data"><div class="kpi-value" style="font-size:18px">${fmtMoney(s.totalRefunded)}</div><div class="kpi-label">Total Refunded</div></div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-icon" style="background:var(--yellow-soft);color:var(--yellow)">⚠</div>
+          <div class="kpi-data"><div class="kpi-value" style="font-size:20px;color:var(--red)">${s.withoutTicket}</div><div class="kpi-label">Without Ticket</div></div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-icon" style="background:var(--accent-soft);color:var(--accent)">📋</div>
+          <div class="kpi-data"><div class="kpi-value" style="font-size:20px">${s.openTickets}</div><div class="kpi-label">Open Tickets</div></div>
+        </div>
+      </div>
+
+      <div class="kpi-grid" style="grid-template-columns:repeat(4,1fr);margin-top:-8px">
+        <div class="kpi-card mini"><div class="kpi-value" style="color:var(--red);font-size:18px">${s.cancellations}</div><div class="kpi-label">Cancellations</div></div>
+        <div class="kpi-card mini"><div class="kpi-value" style="color:var(--orange);font-size:18px">${s.partialRefunds}</div><div class="kpi-label">Partial Refunds</div></div>
+        <div class="kpi-card mini"><div class="kpi-value" style="color:var(--yellow);font-size:18px">${s.fullRefunds}</div><div class="kpi-label">Full Refunds</div></div>
+        <div class="kpi-card mini"><div class="kpi-value" style="color:var(--red);font-size:18px">${s.totalChargebacks}</div><div class="kpi-label">Chargebacks</div></div>
+      </div>
+
+      <div class="section">
+        <div class="toolbar">
+          <div class="filter-group">
+            <button class="filter-btn active" data-rfilter="all">All (${s.totalReturns})</button>
+            <button class="filter-btn" data-rfilter="cancellation">🚫 Cancelled (${s.cancellations})</button>
+            <button class="filter-btn" data-rfilter="partial_refund">🔄 Partial (${s.partialRefunds})</button>
+            <button class="filter-btn" data-rfilter="full_refund">💰 Full (${s.fullRefunds})</button>
+            <button class="filter-btn" data-rfilter="no_ticket" style="color:var(--red)">⚠ No Ticket (${s.withoutTicket})</button>
+          </div>
+          <input type="text" class="search-input" id="returnsSearch" placeholder="Search orders, customers..." style="margin-left:auto;max-width:280px">
+        </div>
+        <div class="section-header"><h2 class="section-title">Returns & Refunds — <span id="returnsCount">${data.returns.length}</span></h2></div>
+        <div class="table-wrap"><table><thead><tr>
+          <th>Order</th><th>Type</th><th>Customer</th><th>Email</th>
+          <th style="text-align:right">Total</th><th style="text-align:right">Refunded</th>
+          <th>Reason</th><th>Date</th><th>Ticket</th>
+        </tr></thead><tbody id="returnsBody"></tbody></table></div>
+      </div>
+
+      ${data.chargebacks.length > 0 ? `
+      <div class="section" style="margin-top:16px">
+        <div class="section-header"><h2 class="section-title">⚠ Chargebacks (${data.chargebacks.length})</h2></div>
+        <div class="table-wrap"><table><thead><tr>
+          <th>Order</th><th>Customer</th><th>Email</th>
+          <th style="text-align:right">Amount</th><th>Date</th><th>Ticket</th>
+        </tr></thead><tbody>${data.chargebacks.map(c => `<tr style="background:rgba(239,68,68,0.05)">
+          <td><a href="#" onclick="navigateTo('order-detail','${c.orderId}');return false;" style="color:var(--accent);font-weight:600">${escHtml(c.orderName)}</a></td>
+          <td>${escHtml(c.customer)}</td>
+          <td style="font-size:12px">${escHtml(c.customerEmail || '')}</td>
+          <td style="text-align:right;color:var(--red);font-weight:700">${fmtMoney(c.total)}</td>
+          <td style="font-size:12px">${fmtDate(c.createdAt)}</td>
+          <td>${c.hasTicket
+            ? `<a href="#" onclick="navigateTo('ticket-detail','${c.ticketId}');return false;" class="badge badge-${c.ticketStatus === 'resolved' ? 'ok' : 'urgent'}">${c.ticketStatus}</a>`
+            : `<button class="btn btn-sm btn-primary" onclick="createReturnTicket('${c.orderId}','${escHtml(c.orderName)}','${encodeURIComponent(c.customer)}','${encodeURIComponent(c.customerEmail||'')}','${c.customerId||''}','chargeback',${c.total})">Create Ticket</button>`
+          }</td>
+        </tr>`).join('')}</tbody></table></div>
+      </div>` : ''}
+    `;
+
+    $$('[data-rfilter]').forEach(btn => btn.addEventListener('click', () => {
+      $$('[data-rfilter]').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      filterType = btn.dataset.rfilter;
+      render();
+    }));
+    $('#returnsSearch').addEventListener('input', e => { searchTerm = e.target.value; render(); });
+    render();
+  } catch (err) { $('#content').innerHTML = `<div class="empty-state"><h3>Error</h3><p>${escHtml(err.message)}</p></div>`; }
+}
+
+// Helper to create a return/chargeback ticket from the returns page
+window.createReturnTicket = async function(orderId, orderName, customerName, customerEmail, customerId, type, amount) {
+  const category = type === 'chargeback' ? 'chargebacks' : 'returns';
+  const subject = type === 'chargeback'
+    ? `Chargeback on Order ${orderName} — $${amount.toFixed(2)}`
+    : `${type === 'cancellation' ? 'Cancelled' : 'Refund'} — Order ${orderName} ($${amount.toFixed(2)})`;
+  try {
+    const r = await fetch('/api/tickets', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        customerId: customerId || null,
+        customerName: decodeURIComponent(customerName),
+        customerEmail: decodeURIComponent(customerEmail),
+        category, priority: type === 'chargeback' ? 'urgent' : 'medium',
+        channel: 'shopify',
+        orderId, orderName,
+        subject,
+        description: `Automatically created from the Returns & Chargebacks page.\nType: ${type}\nAmount: $${amount.toFixed(2)}\nOrder: ${orderName}`,
+      }),
+    });
+    const ticket = await r.json();
+    toast('Ticket created', 'success');
+    navigateTo('ticket-detail', ticket.id);
+  } catch (err) { toast('Failed to create ticket', 'error'); }
+};
+
+// ════════════════════════════════════════════════
+//  SKU AUDIT
+// ════════════════════════════════════════════════
+
+async function loadSkuAudit() {
+  try {
+    const res = await fetch('/api/sku-audit');
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
+
+    let activeTab = 'missing';
+    const editedSkus = new Map(); // variantId → new sku value
+
+    function renderMissing() {
+      const tbody = document.getElementById('skuMissingBody');
+      if (!tbody) return;
+      tbody.innerHTML = data.missingSku.map(item => `<tr>
+        <td>${escHtml(item.product)}</td>
+        <td>${item.variant === 'Default Title' ? '—' : escHtml(item.variant)}</td>
+        <td style="font-size:12px;color:var(--text-muted)">${escHtml(item.vendor)}</td>
+        <td style="text-align:right">${item.available}</td>
+        <td style="text-align:right">${fmtMoney(item.price)}</td>
+        <td>
+          <input type="text" class="form-input sku-edit-input" data-vid="${item.variantId}" 
+            value="${escHtml(editedSkus.get(item.variantId) || item.suggestedSku)}" 
+            style="font-family:monospace;font-size:12px;padding:4px 8px;width:180px">
+        </td>
+        <td><label style="display:flex;align-items:center;gap:4px;cursor:pointer"><input type="checkbox" class="sku-check" data-vid="${item.variantId}" checked> Apply</label></td>
+      </tr>`).join('');
+
+      // Listen for edits
+      tbody.querySelectorAll('.sku-edit-input').forEach(input => {
+        input.addEventListener('input', () => {
+          editedSkus.set(input.dataset.vid, input.value);
+        });
+      });
+    }
+
+    function renderDuplicates() {
+      const wrap = document.getElementById('skuDuplicatesBody');
+      if (!wrap) return;
+      if (!data.duplicates.length) { wrap.innerHTML = '<div class="empty-state" style="padding:30px"><h3>No Duplicates</h3><p>All SKUs are unique across products.</p></div>'; return; }
+      wrap.innerHTML = data.duplicates.map(d => `
+        <div class="section" style="margin-bottom:12px">
+          <div class="section-header"><h2 class="section-title" style="color:var(--red)">⚠ Duplicate SKU: <code>${escHtml(d.sku)}</code> (${d.items.length} products)</h2></div>
+          <div class="table-wrap"><table><thead><tr><th>Product</th><th>Variant</th><th>SKU</th></tr></thead>
+          <tbody>${d.items.map(i => `<tr><td>${escHtml(i.product)}</td><td>${escHtml(i.variant)}</td><td style="font-family:monospace">${escHtml(i.sku)}</td></tr>`).join('')}</tbody></table></div>
+        </div>
+      `).join('');
+    }
+
+    function renderMultiColorway() {
+      const wrap = document.getElementById('skuColorwayBody');
+      if (!wrap) return;
+      if (!data.multiColorway.length) { wrap.innerHTML = '<div class="empty-state" style="padding:30px"><h3>All Good</h3><p>No products with potential multi-colorway issues detected.</p></div>'; return; }
+      wrap.innerHTML = `<div class="table-wrap"><table><thead><tr><th>Product</th><th>Vendor</th><th>Images</th><th>Variants</th><th>Issue</th></tr></thead>
+        <tbody>${data.multiColorway.map(p => `<tr>
+          <td>${escHtml(p.product)}</td>
+          <td style="font-size:12px">${escHtml(p.vendor)}</td>
+          <td style="text-align:right;font-weight:600;color:var(--orange)">${p.imageCount}</td>
+          <td style="text-align:right">${p.variantCount}</td>
+          <td style="font-size:12px;color:var(--red)">Multiple images (${p.imageCount}) on single-variant product — may be different colorways</td>
+        </tr>`).join('')}</tbody></table></div>`;
+    }
+
+    function switchTab(tab) {
+      activeTab = tab;
+      document.querySelectorAll('.sku-tab').forEach(b => b.classList.remove('active'));
+      document.querySelector(`.sku-tab[data-stab="${tab}"]`)?.classList.add('active');
+      document.getElementById('skuMissingWrap').style.display = tab === 'missing' ? '' : 'none';
+      document.getElementById('skuDuplicatesWrap').style.display = tab === 'duplicates' ? '' : 'none';
+      document.getElementById('skuColorwayWrap').style.display = tab === 'colorway' ? '' : 'none';
+      if (tab === 'missing') renderMissing();
+      else if (tab === 'duplicates') renderDuplicates();
+      else if (tab === 'colorway') renderMultiColorway();
+    }
+
+    $('#content').innerHTML = `
+      <div class="kpi-grid" style="grid-template-columns:repeat(4,1fr)">
+        <div class="kpi-card">
+          <div class="kpi-icon" style="background:var(--red-soft);color:var(--red)">🏷</div>
+          <div class="kpi-data"><div class="kpi-value" style="font-size:20px;color:var(--red)">${data.missingSkuCount}</div><div class="kpi-label">Missing SKUs ${infoTip('Products/variants without a SKU code. Every product needs a SKU for proper inventory tracking.')}</div></div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-icon" style="background:var(--orange-soft);color:var(--orange)">⚠</div>
+          <div class="kpi-data"><div class="kpi-value" style="font-size:20px">${data.duplicateSkuCount}</div><div class="kpi-label">Duplicate SKUs ${infoTip('Same SKU used on multiple products. Can cause inventory tracking errors.')}</div></div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-icon" style="background:var(--yellow-soft);color:var(--yellow)">🎨</div>
+          <div class="kpi-data"><div class="kpi-value" style="font-size:20px">${data.multiColorwayCount}</div><div class="kpi-label">Multi-Colorway Issues ${infoTip('Products with many images but only one variant — may have multiple colorways incorrectly combined.')}</div></div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-icon" style="background:var(--green-soft);color:var(--green)">📦</div>
+          <div class="kpi-data"><div class="kpi-value" style="font-size:20px">${data.totalVariants}</div><div class="kpi-label">Total Variants (${data.totalProducts} products)</div></div>
+        </div>
+      </div>
+
+      <div class="section">
+        <div class="toolbar" style="border-bottom:0">
+          <div class="filter-group">
+            <button class="filter-btn sku-tab active" data-stab="missing">🏷 Missing SKUs (${data.missingSkuCount})</button>
+            <button class="filter-btn sku-tab" data-stab="duplicates">⚠ Duplicates (${data.duplicateSkuCount})</button>
+            <button class="filter-btn sku-tab" data-stab="colorway">🎨 Multi-Colorway (${data.multiColorwayCount})</button>
+          </div>
+        </div>
+      </div>
+
+      <div id="skuMissingWrap">
+        <div class="section">
+          <div class="section-header">
+            <h2 class="section-title">Products Missing SKUs (${data.missingSkuCount})</h2>
+            <div style="display:flex;gap:8px">
+              <button class="btn" id="skuSelectAll">Select All</button>
+              <button class="btn btn-primary" id="skuApplyBtn">Apply SKUs to Shopify</button>
+            </div>
+          </div>
+          <p style="padding:0 20px 12px;font-size:13px;color:var(--text-muted)">Suggested SKUs are auto-generated using the pattern <code>KLO-[PRODUCT]-[VARIANT]-[SEQ]</code>. Edit any that you want to change before applying.</p>
+          <div class="table-wrap"><table><thead><tr>
+            <th>Product</th><th>Variant</th><th>Vendor</th>
+            <th style="text-align:right">Stock</th><th style="text-align:right">Price</th>
+            <th>SKU</th><th>Apply</th>
+          </tr></thead><tbody id="skuMissingBody"></tbody></table></div>
+        </div>
+      </div>
+
+      <div id="skuDuplicatesWrap" style="display:none">
+        <div id="skuDuplicatesBody"></div>
+      </div>
+
+      <div id="skuColorwayWrap" style="display:none">
+        <div class="section">
+          <div class="section-header"><h2 class="section-title">Potential Multi-Colorway Issues (${data.multiColorwayCount})</h2></div>
+          <p style="padding:0 20px 12px;font-size:13px;color:var(--text-muted)">These products have many images but only one variant — they may contain multiple colorways in a single listing that should be separated.</p>
+          <div id="skuColorwayBody"></div>
+        </div>
+      </div>
+    `;
+
+    // Tab switching
+    document.querySelectorAll('.sku-tab').forEach(btn => btn.addEventListener('click', () => switchTab(btn.dataset.stab)));
+
+    // Select all checkboxes
+    document.getElementById('skuSelectAll')?.addEventListener('click', () => {
+      document.querySelectorAll('.sku-check').forEach(cb => cb.checked = true);
+    });
+
+    // Apply SKUs button
+    document.getElementById('skuApplyBtn')?.addEventListener('click', async () => {
+      const updates = [];
+      document.querySelectorAll('.sku-check:checked').forEach(cb => {
+        const vid = cb.dataset.vid;
+        const input = document.querySelector(`.sku-edit-input[data-vid="${vid}"]`);
+        if (input && input.value.trim()) {
+          updates.push({ variantId: vid, sku: input.value.trim() });
+        }
+      });
+
+      if (updates.length === 0) { toast('No SKUs selected', 'error'); return; }
+
+      const btn = document.getElementById('skuApplyBtn');
+      btn.disabled = true; btn.textContent = `Applying ${updates.length} SKUs...`;
+
+      try {
+        const r = await fetch('/api/sku-update', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ updates }),
+        });
+        const result = await r.json();
+        if (result.success > 0) toast(`${result.success} SKUs updated successfully!`, 'success');
+        if (result.failed > 0) toast(`${result.failed} SKUs failed: ${result.errors.join(', ')}`, 'error');
+        setTimeout(() => loadSkuAudit(), 1000);
+      } catch (err) {
+        toast('Failed to update SKUs', 'error');
+        btn.disabled = false; btn.textContent = 'Apply SKUs to Shopify';
+      }
+    });
+
+    renderMissing();
   } catch (err) { $('#content').innerHTML = `<div class="empty-state"><h3>Error</h3><p>${escHtml(err.message)}</p></div>`; }
 }
 
