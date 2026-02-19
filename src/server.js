@@ -821,6 +821,168 @@ app.get('/api/replenishment', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// ─── INVENTORY FORECAST ────────────────────────
+
+app.get('/api/forecast', async (req, res) => {
+  try {
+    const { products, orders } = await getData();
+    const analysis = analyzeInventory(products, orders);
+    const now = new Date();
+
+    // Build weekly sales buckets per SKU (last 12 weeks)
+    const weekBuckets = {};
+    for (const order of orders) {
+      const orderDate = new Date(order.createdAt);
+      const weeksAgo = Math.floor((now - orderDate) / (7 * 86400000));
+      if (weeksAgo > 12) continue;
+      for (const li of order.lineItems.edges) {
+        const sku = li.node.sku || '';
+        if (!sku) continue;
+        if (!weekBuckets[sku]) weekBuckets[sku] = new Array(13).fill(0);
+        weekBuckets[sku][weeksAgo] += li.node.quantity;
+      }
+    }
+
+    // Enhanced forecast per variant
+    const forecasts = analysis.variants.map(v => {
+      const weeks = weekBuckets[v.sku] || new Array(13).fill(0);
+
+      // Weighted Moving Average (recent weeks count more)
+      // Weights: [current week x4, 1 week ago x3, 2 weeks ago x2.5, 3 weeks x2, then x1 each]
+      const weights = [4, 3, 2.5, 2, 1.5, 1.5, 1, 1, 1, 1, 0.8, 0.8, 0.5];
+      let weightedSum = 0, totalWeight = 0;
+      for (let i = 0; i < 13; i++) {
+        weightedSum += weeks[i] * weights[i];
+        totalWeight += weeks[i] > 0 || i < 4 ? weights[i] : 0; // only count weeks with data (or first 4)
+      }
+      if (totalWeight === 0) totalWeight = 1;
+      const wmaDailyVelocity = (weightedSum / totalWeight) / 7;
+
+      // Trend detection: compare last 4 weeks vs prior 4 weeks
+      const recent4 = weeks.slice(0, 4).reduce((a, b) => a + b, 0);
+      const prior4 = weeks.slice(4, 8).reduce((a, b) => a + b, 0);
+      let trend = 'stable';
+      let trendPct = 0;
+      if (prior4 > 0) {
+        trendPct = Math.round(((recent4 - prior4) / prior4) * 100);
+        if (trendPct > 25) trend = 'accelerating';
+        else if (trendPct < -25) trend = 'declining';
+      } else if (recent4 > 0) {
+        trend = 'new_demand';
+        trendPct = 100;
+      }
+
+      // Use WMA for forecast (more responsive to recent changes)
+      const forecastDaily = wmaDailyVelocity > 0 ? wmaDailyVelocity : v.dailyVelocity;
+
+      // Stock-out date prediction
+      let stockOutDate = null;
+      let daysUntilStockOut = v.available > 0 && forecastDaily > 0 
+        ? Math.round(v.available / forecastDaily) : (v.available > 0 ? 999 : 0);
+      if (daysUntilStockOut > 0 && daysUntilStockOut < 999) {
+        stockOutDate = new Date(now.getTime() + daysUntilStockOut * 86400000).toISOString().split('T')[0];
+      }
+
+      // Revenue at risk (next 30 days of potential lost sales if out of stock)
+      const projectedDemand30d = Math.round(forecastDaily * 30);
+      const unmetDemand = daysUntilStockOut < 30 
+        ? Math.round(forecastDaily * Math.max(0, 30 - daysUntilStockOut)) : 0;
+      const revenueAtRisk = unmetDemand * v.price;
+
+      // Sell-through rate (units sold / (units sold + available))
+      const sellThrough = v.unitsSold + v.available > 0
+        ? Math.round((v.unitsSold / (v.unitsSold + v.available)) * 100) : 0;
+
+      // Optimal reorder date (order leadTime days before stock-out)
+      let optimalReorderDate = null;
+      const leadTimeDays = 14;
+      if (daysUntilStockOut > leadTimeDays && daysUntilStockOut < 999) {
+        optimalReorderDate = new Date(now.getTime() + (daysUntilStockOut - leadTimeDays) * 86400000).toISOString().split('T')[0];
+      } else if (daysUntilStockOut <= leadTimeDays && forecastDaily > 0) {
+        optimalReorderDate = 'OVERDUE';
+      }
+
+      return {
+        sku: v.sku, product: v.product, variant: v.variant,
+        variantId: v.variantId, productId: v.productId,
+        vendor: v.vendor, price: v.price,
+        available: v.available, committed: v.committed, onHand: v.onHand,
+        unitsSold: v.unitsSold,
+        dailyVelocity: v.dailyVelocity,
+        forecastDailyVelocity: Math.round(forecastDaily * 10) / 10,
+        monthlyVelocity: v.monthlyVelocity,
+        forecastMonthly: Math.round(forecastDaily * 30),
+        weeklySales: weeks.slice(0, 12).reverse(), // oldest to newest for charting
+        daysOfStock: daysUntilStockOut,
+        stockOutDate,
+        optimalReorderDate,
+        projectedDemand30d,
+        unmetDemand,
+        revenueAtRisk: Math.round(revenueAtRisk * 100) / 100,
+        sellThrough,
+        trend, trendPct,
+        priority: v.priority,
+        velocityClass: v.velocityClass,
+        abcCategory: v.abcCategory,
+        reorderPoint: v.reorderPoint,
+        suggestedQty: v.suggestedQty,
+      };
+    });
+
+    // Summary KPIs
+    const totalRevenueAtRisk = forecasts.reduce((s, f) => s + f.revenueAtRisk, 0);
+    const stockOutIn7 = forecasts.filter(f => f.daysOfStock > 0 && f.daysOfStock <= 7).length;
+    const stockOutIn14 = forecasts.filter(f => f.daysOfStock > 0 && f.daysOfStock <= 14).length;
+    const stockOutIn30 = forecasts.filter(f => f.daysOfStock > 0 && f.daysOfStock <= 30).length;
+    const alreadyOut = forecasts.filter(f => f.daysOfStock === 0 && f.unitsSold > 0).length;
+    const accelerating = forecasts.filter(f => f.trend === 'accelerating').length;
+    const declining = forecasts.filter(f => f.trend === 'declining').length;
+    const avgSellThrough = forecasts.length > 0 
+      ? Math.round(forecasts.reduce((s, f) => s + f.sellThrough, 0) / forecasts.length) : 0;
+    const totalInventoryValue = forecasts.reduce((s, f) => s + f.available * f.price, 0);
+    const totalProjectedRevenue30d = forecasts.reduce((s, f) => s + f.projectedDemand30d * f.price, 0);
+
+    // Top products by revenue
+    const topByRevenue = [...forecasts]
+      .sort((a, b) => (b.unitsSold * b.price) - (a.unitsSold * a.price))
+      .slice(0, 10);
+
+    // At-risk items (running out in 30 days with proven sales)
+    const atRisk = forecasts
+      .filter(f => f.daysOfStock > 0 && f.daysOfStock <= 30 && f.unitsSold > 0)
+      .sort((a, b) => a.daysOfStock - b.daysOfStock);
+
+    // Velocity distribution
+    const velDist = { fast: 0, regular: 0, slow: 0, noSales: 0 };
+    forecasts.forEach(f => {
+      if (f.velocityClass === 'FAST MOVER') velDist.fast++;
+      else if (f.velocityClass === 'REGULAR') velDist.regular++;
+      else if (f.velocityClass === 'SLOW MOVER') velDist.slow++;
+      else velDist.noSales++;
+    });
+
+    res.json({
+      forecasts,
+      summary: {
+        totalVariants: forecasts.length,
+        totalRevenueAtRisk: Math.round(totalRevenueAtRisk * 100) / 100,
+        stockOutIn7, stockOutIn14, stockOutIn30, alreadyOut,
+        accelerating, declining,
+        avgSellThrough,
+        totalInventoryValue: Math.round(totalInventoryValue * 100) / 100,
+        totalProjectedRevenue30d: Math.round(totalProjectedRevenue30d * 100) / 100,
+        velDist,
+      },
+      topByRevenue,
+      atRisk,
+      daysCovered: analysis.daysCovered,
+    });
+  } catch (err) {
+    console.error('[forecast]', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ─── CLEANUP ANALYSIS ──────────────────────────
 
 app.get('/api/cleanup-report', async (req, res) => {

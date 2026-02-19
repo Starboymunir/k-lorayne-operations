@@ -83,6 +83,7 @@ function navigateTo(page, params) {
   const titles = {
     dashboard: 'Dashboard', inventory: 'Inventory Audit',
     replenishment: 'Replenishment', alerts: 'Low-Stock Alerts',
+    forecast: 'Inventory Forecast',
     orders: 'Orders', customers: 'Customers',
     tickets: 'Support Tickets', analytics: 'Analytics & Reports',
     cleanup: 'Inventory Cleanup', settings: 'Settings', 'customer-profile': 'Customer Profile',
@@ -94,6 +95,7 @@ function navigateTo(page, params) {
   const load = {
     dashboard: loadDashboard, inventory: loadInventory,
     replenishment: loadReplenishment, alerts: loadAlerts,
+    forecast: loadForecast,
     orders: loadOrders, customers: loadCustomers,
     tickets: loadTickets, analytics: loadAnalytics,
     cleanup: loadCleanup, settings: loadSettings, 'customer-profile': () => loadCustomerProfile(params),
@@ -669,6 +671,315 @@ async function loadReplenishment() {
     }));
     $('#exportReplBtn')?.addEventListener('click', () => exportCSV(data.items.map(i => ({ Priority: i.priority, SKU: i.sku, Product: i.product, Variant: i.variant, Vendor: i.vendor, Stock: i.available, DaysLeft: i.daysOfStock, MonthlySales: i.monthlyVelocity, OrderQty: i.suggestedQty })), 'reorder-list.csv'));
     render();
+  } catch (err) { $('#content').innerHTML = `<div class="empty-state"><h3>Error</h3><p>${escHtml(err.message)}</p></div>`; }
+}
+
+// ════════════════════════════════════════════════
+//  INVENTORY FORECAST
+// ════════════════════════════════════════════════
+
+async function loadForecast() {
+  try {
+    const res = await fetch('/api/forecast');
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
+
+    const s = data.summary;
+    let view = 'overview', searchTerm = '', filterTrend = 'ALL', sortCol = 'revenueAtRisk', sortDir = -1;
+
+    // Mini sparkline builder (12 weeks of data)
+    function sparkline(weeks, color = 'var(--accent)') {
+      const max = Math.max(...weeks, 1);
+      return `<div class="spark" title="12-week sales trend">${weeks.map((w, i) => {
+        const h = Math.max(1, Math.round((w / max) * 24));
+        return `<div class="spark-bar" style="height:${h}px;background:${color};opacity:${0.4 + (i / weeks.length) * 0.6}"></div>`;
+      }).join('')}</div>`;
+    }
+
+    function trendIcon(t, pct) {
+      if (t === 'accelerating') return `<span class="trend-up">↑ ${pct}%</span>`;
+      if (t === 'declining') return `<span class="trend-down">↓ ${Math.abs(pct)}%</span>`;
+      if (t === 'new_demand') return `<span class="trend-up">★ New</span>`;
+      return `<span class="trend-flat">→ Stable</span>`;
+    }
+
+    function getFiltered() {
+      let items = data.forecasts;
+      if (searchTerm) {
+        const q = searchTerm.toLowerCase();
+        items = items.filter(f => f.product.toLowerCase().includes(q) || f.sku.toLowerCase().includes(q) || f.vendor.toLowerCase().includes(q));
+      }
+      if (filterTrend === 'accelerating') items = items.filter(f => f.trend === 'accelerating');
+      else if (filterTrend === 'declining') items = items.filter(f => f.trend === 'declining');
+      else if (filterTrend === 'at_risk') items = items.filter(f => f.daysOfStock > 0 && f.daysOfStock <= 30 && f.unitsSold > 0);
+      else if (filterTrend === 'out') items = items.filter(f => f.daysOfStock === 0 && f.unitsSold > 0);
+      items.sort((a, b) => {
+        let va = a[sortCol], vb = b[sortCol];
+        if (typeof va === 'string') return va.localeCompare(vb) * sortDir;
+        return ((va || 0) - (vb || 0)) * sortDir;
+      });
+      return items;
+    }
+
+    function renderOverview() {
+      const body = document.getElementById('fcBody');
+      if (!body) return;
+
+      // Velocity distribution chart
+      const velTotal = s.velDist.fast + s.velDist.regular + s.velDist.slow + s.velDist.noSales;
+      const velPct = k => velTotal > 0 ? Math.round((s.velDist[k] / velTotal) * 100) : 0;
+
+      body.innerHTML = `
+        <div class="fc-grid">
+          <div class="section">
+            <div class="section-header"><h2 class="section-title">Stock-Out Timeline</h2></div>
+            <div style="padding:20px">
+              <div class="fc-timeline-row">
+                <div class="fc-tl-block fc-tl-critical" style="cursor:pointer" onclick="document.querySelector('[data-fcfilter=out]').click()">
+                  <div class="fc-tl-num">${s.alreadyOut}</div>
+                  <div class="fc-tl-label">Out Now</div>
+                </div>
+                <div class="fc-tl-arrow">→</div>
+                <div class="fc-tl-block fc-tl-urgent" style="cursor:pointer" onclick="document.querySelector('[data-fcfilter=at_risk]').click()">
+                  <div class="fc-tl-num">${s.stockOutIn7}</div>
+                  <div class="fc-tl-label">Out in 7d</div>
+                </div>
+                <div class="fc-tl-arrow">→</div>
+                <div class="fc-tl-block fc-tl-warning">
+                  <div class="fc-tl-num">${s.stockOutIn14}</div>
+                  <div class="fc-tl-label">Out in 14d</div>
+                </div>
+                <div class="fc-tl-arrow">→</div>
+                <div class="fc-tl-block fc-tl-watch">
+                  <div class="fc-tl-num">${s.stockOutIn30}</div>
+                  <div class="fc-tl-label">Out in 30d</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="section">
+            <div class="section-header"><h2 class="section-title">Velocity Distribution</h2></div>
+            <div style="padding:20px">
+              <div class="vel-dist">
+                <div class="vel-dist-row"><span class="vel-dist-label" style="color:var(--green)">⚡ Fast Movers</span><div class="vel-dist-bar-wrap"><div class="vel-dist-bar" style="width:${velPct('fast')}%;background:var(--green)"></div></div><span class="vel-dist-val">${s.velDist.fast} (${velPct('fast')}%)</span></div>
+                <div class="vel-dist-row"><span class="vel-dist-label" style="color:var(--blue)">● Regular</span><div class="vel-dist-bar-wrap"><div class="vel-dist-bar" style="width:${velPct('regular')}%;background:var(--blue)"></div></div><span class="vel-dist-val">${s.velDist.regular} (${velPct('regular')}%)</span></div>
+                <div class="vel-dist-row"><span class="vel-dist-label" style="color:var(--orange)">🐢 Slow</span><div class="vel-dist-bar-wrap"><div class="vel-dist-bar" style="width:${velPct('slow')}%;background:var(--orange)"></div></div><span class="vel-dist-val">${s.velDist.slow} (${velPct('slow')}%)</span></div>
+                <div class="vel-dist-row"><span class="vel-dist-label" style="color:var(--text-muted)">○ No Sales</span><div class="vel-dist-bar-wrap"><div class="vel-dist-bar" style="width:${velPct('noSales')}%;background:var(--text-muted)"></div></div><span class="vel-dist-val">${s.velDist.noSales} (${velPct('noSales')}%)</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        ${data.atRisk.length > 0 ? `
+        <div class="section" style="margin-top:16px">
+          <div class="section-header">
+            <h2 class="section-title">⚠ At-Risk Products (Running Out in 30 Days)</h2>
+            <span style="font-size:13px;color:var(--text-muted)">${data.atRisk.length} items · ${fmtMoney(data.atRisk.reduce((s,f) => s + f.revenueAtRisk, 0))} revenue at risk</span>
+          </div>
+          <div class="table-wrap"><table><thead><tr>
+            <th>Product</th><th>SKU</th><th style="text-align:right">Stock</th>
+            <th style="text-align:right">Days Left</th><th>Stock-Out Date</th>
+            <th>Trend</th><th>12-Week Sales</th>
+            <th style="text-align:right">Forecast/mo</th><th style="text-align:right">Revenue at Risk</th>
+            <th>Reorder By</th>
+          </tr></thead><tbody>
+            ${data.atRisk.slice(0, 20).map(f => `<tr>
+              <td>${escHtml(f.product)}</td>
+              <td style="font-family:monospace;font-size:12px">${escHtml(f.sku) || '—'}</td>
+              <td style="text-align:right;font-weight:600;color:${f.available <= 0 ? 'var(--red)' : f.daysOfStock < 7 ? 'var(--orange)' : 'var(--text)'}">${f.available}</td>
+              <td style="text-align:right;font-weight:600;color:${f.daysOfStock <= 7 ? 'var(--red)' : f.daysOfStock <= 14 ? 'var(--orange)' : 'var(--yellow)'}">${f.daysOfStock}d</td>
+              <td style="font-size:12px">${f.stockOutDate || '—'}</td>
+              <td>${trendIcon(f.trend, f.trendPct)}</td>
+              <td>${sparkline(f.weeklySales, f.trend === 'accelerating' ? 'var(--green)' : f.trend === 'declining' ? 'var(--red)' : 'var(--accent)')}</td>
+              <td style="text-align:right">${f.forecastMonthly}/mo</td>
+              <td style="text-align:right;font-weight:600;color:var(--red)">${fmtMoney(f.revenueAtRisk)}</td>
+              <td style="font-size:12px;font-weight:600;color:${f.optimalReorderDate === 'OVERDUE' ? 'var(--red)' : 'var(--orange)'}">${f.optimalReorderDate || '—'}</td>
+            </tr>`).join('')}
+          </tbody></table></div>
+        </div>` : ''}
+
+        <div class="section" style="margin-top:16px">
+          <div class="section-header">
+            <h2 class="section-title">🏆 Top Products by Revenue</h2>
+          </div>
+          <div class="table-wrap"><table><thead><tr>
+            <th>#</th><th>Product</th><th>SKU</th><th style="text-align:right">Units Sold</th>
+            <th style="text-align:right">Revenue</th><th>Sell-Through</th><th>Trend</th>
+            <th>12-Week Sales</th><th>ABC</th>
+          </tr></thead><tbody>
+            ${data.topByRevenue.map((f, i) => `<tr>
+              <td style="font-weight:700;color:${i < 3 ? 'var(--accent)' : 'var(--text-dim)'}">${i + 1}</td>
+              <td>${escHtml(f.product)}</td>
+              <td style="font-family:monospace;font-size:12px">${escHtml(f.sku) || '—'}</td>
+              <td style="text-align:right">${f.unitsSold}</td>
+              <td style="text-align:right;font-weight:600">${fmtMoney(f.unitsSold * f.price)}</td>
+              <td><div class="sell-through-bar"><div class="st-fill" style="width:${f.sellThrough}%;background:${f.sellThrough > 70 ? 'var(--green)' : f.sellThrough > 40 ? 'var(--accent)' : 'var(--orange)'}"></div><span>${f.sellThrough}%</span></div></td>
+              <td>${trendIcon(f.trend, f.trendPct)}</td>
+              <td>${sparkline(f.weeklySales)}</td>
+              <td><span style="padding:2px 6px;border-radius:3px;font-size:11px;font-weight:600;background:${f.abcCategory === 'A' ? 'var(--accent-soft)' : f.abcCategory === 'B' ? 'var(--yellow-soft)' : 'var(--red-soft)'};color:${f.abcCategory === 'A' ? 'var(--accent)' : f.abcCategory === 'B' ? 'var(--yellow)' : 'var(--red)'}">${f.abcCategory}</span></td>
+            </tr>`).join('')}
+          </tbody></table></div>
+        </div>
+      `;
+    }
+
+    function renderTable() {
+      const tbody = document.getElementById('fcTableBody');
+      if (!tbody) return;
+      const items = getFiltered();
+      tbody.innerHTML = items.slice(0, 200).map(f => `<tr>
+        <td>${escHtml(f.product)}</td>
+        <td style="font-family:monospace;font-size:12px">${escHtml(f.sku) || '—'}</td>
+        <td style="text-align:right">${f.available}</td>
+        <td style="text-align:right">${f.forecastMonthly}/mo</td>
+        <td style="text-align:right;font-weight:600;color:${f.daysOfStock === 0 ? 'var(--red)' : f.daysOfStock <= 7 ? 'var(--orange)' : f.daysOfStock <= 30 ? 'var(--yellow)' : 'var(--text)'}">${f.daysOfStock === 999 ? '∞' : f.daysOfStock + 'd'}</td>
+        <td style="font-size:12px">${f.stockOutDate || '—'}</td>
+        <td>${trendIcon(f.trend, f.trendPct)}</td>
+        <td>${sparkline(f.weeklySales, f.trend === 'accelerating' ? 'var(--green)' : f.trend === 'declining' ? 'var(--red)' : 'var(--accent)')}</td>
+        <td><div class="sell-through-bar"><div class="st-fill" style="width:${f.sellThrough}%;background:${f.sellThrough > 70 ? 'var(--green)' : f.sellThrough > 40 ? 'var(--accent)' : 'var(--orange)'}"></div><span>${f.sellThrough}%</span></div></td>
+        <td style="text-align:right;color:${f.revenueAtRisk > 0 ? 'var(--red)' : 'var(--text-dim)'};font-weight:${f.revenueAtRisk > 0 ? '600' : '400'}">${f.revenueAtRisk > 0 ? fmtMoney(f.revenueAtRisk) : '—'}</td>
+        <td style="font-size:12px;color:${f.optimalReorderDate === 'OVERDUE' ? 'var(--red)' : 'var(--text-dim)'};font-weight:${f.optimalReorderDate === 'OVERDUE' ? '700' : '400'}">${f.optimalReorderDate || '—'}</td>
+        <td>${priorityBadge(f.priority)}</td>
+      </tr>`).join('');
+      document.getElementById('fcCount').textContent = `${items.length} of ${data.forecasts.length}`;
+    }
+
+    function renderView() {
+      const body = document.getElementById('fcBody');
+      const table = document.getElementById('fcTableWrap');
+      if (view === 'overview') { if (body) body.style.display = ''; if (table) table.style.display = 'none'; renderOverview(); }
+      else { if (body) body.style.display = 'none'; if (table) table.style.display = ''; renderTable(); }
+    }
+
+    $('#content').innerHTML = `
+      <div class="kpi-grid" style="grid-template-columns:repeat(4,1fr)">
+        <div class="kpi-card">
+          <div class="kpi-icon" style="background:var(--red-soft);color:var(--red)">💰</div>
+          <div class="kpi-data">
+            <div class="kpi-value" style="font-size:18px">${fmtMoney(s.totalRevenueAtRisk)}</div>
+            <div class="kpi-label">Revenue at Risk ${infoTip('Potential lost revenue in the next 30 days if stock-outs are not addressed.')}</div>
+          </div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-icon" style="background:var(--orange-soft);color:var(--orange)">📅</div>
+          <div class="kpi-data">
+            <div class="kpi-value" style="font-size:18px">${s.stockOutIn30}</div>
+            <div class="kpi-label">Stock-Out in 30d ${infoTip('Products that will run out of stock within 30 days based on weighted demand forecasting.')}</div>
+          </div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-icon" style="background:var(--green-soft);color:var(--green)">📈</div>
+          <div class="kpi-data">
+            <div class="kpi-value" style="font-size:18px">${fmtMoney(s.totalProjectedRevenue30d)}</div>
+            <div class="kpi-label">Projected Revenue (30d) ${infoTip('Estimated revenue from inventory sales in the next 30 days based on current demand forecast.')}</div>
+          </div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-icon" style="background:var(--accent-soft);color:var(--accent)">📊</div>
+          <div class="kpi-data">
+            <div class="kpi-value" style="font-size:18px">${s.avgSellThrough}%</div>
+            <div class="kpi-label">Avg Sell-Through ${infoTip('Average sell-through rate: percentage of received inventory that has been sold. Higher is better.')}</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="kpi-grid" style="grid-template-columns:repeat(4,1fr);margin-top:-8px">
+        <div class="kpi-card mini">
+          <div class="kpi-value" style="color:var(--red);font-size:20px">${s.alreadyOut}</div>
+          <div class="kpi-label">Out of Stock</div>
+        </div>
+        <div class="kpi-card mini">
+          <div class="kpi-value" style="color:var(--yellow);font-size:20px">${fmtMoney(s.totalInventoryValue)}</div>
+          <div class="kpi-label">Inventory Value</div>
+        </div>
+        <div class="kpi-card mini">
+          <div class="kpi-value" style="color:var(--green);font-size:20px">${s.accelerating}</div>
+          <div class="kpi-label">Accelerating ↑</div>
+        </div>
+        <div class="kpi-card mini">
+          <div class="kpi-value" style="color:var(--orange);font-size:20px">${s.declining}</div>
+          <div class="kpi-label">Declining ↓</div>
+        </div>
+      </div>
+
+      <div class="section">
+        <div class="toolbar" style="border-bottom:0;">
+          <div class="filter-group">
+            <button class="filter-btn active" data-fcview="overview">📊 Overview</button>
+            <button class="filter-btn" data-fcview="table">📋 All Products</button>
+          </div>
+          <div class="filter-group" style="margin-left:12px">
+            <button class="filter-btn active" data-fcfilter="ALL">All</button>
+            <button class="filter-btn" data-fcfilter="at_risk">⚠ At Risk</button>
+            <button class="filter-btn" data-fcfilter="out">🔴 Out of Stock</button>
+            <button class="filter-btn" data-fcfilter="accelerating">↑ Accelerating</button>
+            <button class="filter-btn" data-fcfilter="declining">↓ Declining</button>
+          </div>
+          <input type="text" class="search-input" id="fcSearch" placeholder="Search products, SKUs..." style="margin-left:auto;max-width:280px">
+          <button class="export-btn" id="exportFcBtn">Export CSV</button>
+        </div>
+      </div>
+
+      <div id="fcBody"></div>
+
+      <div id="fcTableWrap" style="display:none">
+        <div class="section">
+          <div class="section-header"><h2 class="section-title">All Products — <span id="fcCount">${data.forecasts.length}</span></h2></div>
+          <div class="table-wrap"><table><thead><tr>
+            <th data-fcsort="product">Product</th><th data-fcsort="sku">SKU</th>
+            <th data-fcsort="available" style="text-align:right">Stock</th>
+            <th data-fcsort="forecastMonthly" style="text-align:right">Forecast</th>
+            <th data-fcsort="daysOfStock" style="text-align:right">Days Left</th>
+            <th>Stock-Out Date</th><th data-fcsort="trendPct">Trend</th>
+            <th>12-Week Sales</th><th data-fcsort="sellThrough">Sell-Through</th>
+            <th data-fcsort="revenueAtRisk" style="text-align:right">Rev at Risk</th>
+            <th>Reorder By</th><th data-fcsort="priority">Status</th>
+          </tr></thead><tbody id="fcTableBody"></tbody></table></div>
+        </div>
+      </div>
+    `;
+
+    // Event handlers
+    $$('[data-fcview]').forEach(btn => btn.addEventListener('click', () => {
+      $$('[data-fcview]').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      view = btn.dataset.fcview;
+      renderView();
+    }));
+
+    $$('[data-fcfilter]').forEach(btn => btn.addEventListener('click', () => {
+      $$('[data-fcfilter]').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      filterTrend = btn.dataset.fcfilter;
+      if (view === 'overview' && filterTrend !== 'ALL') {
+        // Switch to table view for filtered data
+        view = 'table';
+        $$('[data-fcview]').forEach(b => b.classList.remove('active'));
+        document.querySelector('[data-fcview="table"]')?.classList.add('active');
+      }
+      renderView();
+    }));
+
+    $('#fcSearch').addEventListener('input', e => { searchTerm = e.target.value; renderView(); });
+
+    $$('th[data-fcsort]').forEach(th => th.addEventListener('click', () => {
+      const c = th.dataset.fcsort;
+      if (sortCol === c) sortDir *= -1; else { sortCol = c; sortDir = -1; }
+      renderTable();
+    }));
+
+    $('#exportFcBtn').addEventListener('click', () => exportCSV(data.forecasts.map(f => ({
+      Product: f.product, SKU: f.sku, Vendor: f.vendor, Price: f.price,
+      Stock: f.available, UnitsSold: f.unitsSold,
+      ForecastMonthly: f.forecastMonthly, DaysOfStock: f.daysOfStock,
+      StockOutDate: f.stockOutDate || '', Trend: f.trend, TrendPct: f.trendPct,
+      SellThrough: f.sellThrough + '%', RevenueAtRisk: f.revenueAtRisk,
+      OptimalReorderDate: f.optimalReorderDate || '', Priority: f.priority,
+      VelocityClass: f.velocityClass, ABC: f.abcCategory,
+    })), `forecast-${new Date().toISOString().split('T')[0]}.csv`));
+
+    renderView();
   } catch (err) { $('#content').innerHTML = `<div class="empty-state"><h3>Error</h3><p>${escHtml(err.message)}</p></div>`; }
 }
 
