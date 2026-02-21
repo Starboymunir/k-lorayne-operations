@@ -288,8 +288,8 @@ body {
   transition: border-color 0.15s, transform 0.15s;
 }
 .kpi-card:hover { border-color: var(--accent); }
-.kpi-card.clickable { cursor: pointer; }
-.kpi-card.clickable:hover { transform: translateY(-1px); }
+.kpi-card.clickable { cursor: pointer; transition: transform 0.15s, border-color 0.15s, box-shadow 0.15s; }
+.kpi-card.clickable:hover { transform: translateY(-2px); box-shadow: 0 4px 12px rgba(0,0,0,0.2); }
 
 .kpi-card.mini {
   flex-direction: column; gap: 4px;

@@ -324,13 +324,29 @@ function analyzeInventory(products, orders, config = {}) {
       else if (monthlyVelocity >= 3) velocityClass = 'REGULAR';
       else if (monthlyVelocity > 0) velocityClass = 'SLOW MOVER';
 
-      // Extract ALERT ME metafield from product
-      const alertMeField = product.metafields?.edges?.find(e => 
-        e.node.key?.toLowerCase().includes('alert') || 
-        e.node.key === 'ALERT_ME' ||
-        e.node.value?.toLowerCase().includes('alert')
-      );
-      const alertMe = alertMeField?.node?.value === 'true' || alertMeField?.node?.value === '1' || false;
+      // Extract "Back in Stock" / "Alert Me" subscriber count from product metafields
+      // Common apps store this in different namespaces: swym, appikon, bis, back_in_stock, klaviyo, etc.
+      let alertMeCount = 0;
+      const metaEdges = product.metafields?.edges || [];
+      for (const e of metaEdges) {
+        const ns = (e.node.namespace || '').toLowerCase();
+        const k = (e.node.key || '').toLowerCase();
+        const val = (e.node.value || '').trim();
+
+        // Check for common back-in-stock app metafield patterns
+        const isAlertField = (
+          k.includes('alert') || k.includes('notify') || k.includes('waitlist') ||
+          k.includes('subscriber') || k.includes('bis_count') || k.includes('back_in_stock') ||
+          ns.includes('swym') || ns.includes('appikon') || ns.includes('bis') ||
+          ns.includes('back_in_stock') || ns.includes('klaviyo')
+        );
+        if (isAlertField) {
+          // Try to parse as number (subscriber count)
+          const num = parseInt(val);
+          if (!isNaN(num) && num > 0) { alertMeCount = Math.max(alertMeCount, num); }
+          else if (val === 'true' || val === '1') { alertMeCount = Math.max(alertMeCount, 1); }
+        }
+      }
 
       variants.push({
         sku, product: product.title, variant: v.title,
@@ -340,7 +356,8 @@ function analyzeInventory(products, orders, config = {}) {
         unitsSold, dailyVelocity: Math.round(dailyVelocity * 10) / 10,
         weeklyVelocity: Math.round(dailyVelocity * 7 * 10) / 10,
         monthlyVelocity: Math.round(monthlyVelocity),
-        daysOfStock, reorderPoint, suggestedQty, needsReorder, priority, velocityClass, alertMe,
+        daysOfStock, reorderPoint, suggestedQty, needsReorder, priority, velocityClass,
+        alertMe: alertMeCount > 0, alertMeCount,
       });
     }
   }
@@ -401,10 +418,23 @@ function saveCustomerCache(customers) {
   }
 }
 
+let _fetchLock = null; // Prevents concurrent data fetches (race condition fix)
+
 async function getData(forceRefresh = false) {
-  if (!forceRefresh && cache.products && (Date.now() - cache.lastFetch < CACHE_TTL)) {
+  // Cache is valid only if products AND customers are loaded
+  if (!forceRefresh && cache.products && cache.customers?.length > 0 && (Date.now() - cache.lastFetch < CACHE_TTL)) {
     return cache;
   }
+  // If a fetch is already in progress, wait for it instead of starting a new one
+  if (_fetchLock) {
+    console.log('[server] getData() — waiting for in-progress fetch...');
+    return _fetchLock;
+  }
+  _fetchLock = _doFetch(forceRefresh);
+  try { return await _fetchLock; } finally { _fetchLock = null; }
+}
+
+async function _doFetch(forceRefresh) {
   console.log('[server] Fetching fresh data from Shopify...');
   fetchStatus = { state: 'fetching', products: false, orders: false, customers: false, customerCount: 0, error: null };
   const sinceDate = new Date(Date.now() - 90 * 86400000).toISOString().split('T')[0];
@@ -416,7 +446,8 @@ async function getData(forceRefresh = false) {
   ]);
   fetchStatus.products = true;
   fetchStatus.orders = true;
-  cache = { products, orders, customers: cache.customers || [], lastFetch: Date.now() };
+  // Don't set lastFetch yet — customers aren't loaded, so cache isn't complete
+  cache = { products, orders, customers: cache.customers || [], lastFetch: 0 };
   console.log(`[server] Phase 1 done: ${products.length} products, ${orders.length} orders`);
 
   // Phase 2: Load customers — try instant disk cache first, then refresh in background
@@ -1374,6 +1405,32 @@ app.post('/api/sku-update', async (req, res) => {
     }
 
     res.json(results);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ─── METAFIELD DIAGNOSTICS (for Alert Me / Back in Stock integration) ───
+
+app.get('/api/metafields-diagnostic', async (req, res) => {
+  try {
+    const { products } = await getData();
+    const allMeta = {};
+    let productsWithMeta = 0;
+    for (const p of products) {
+      const edges = p.metafields?.edges || [];
+      if (edges.length > 0) productsWithMeta++;
+      for (const e of edges) {
+        const nsKey = `${e.node.namespace}.${e.node.key}`;
+        if (!allMeta[nsKey]) allMeta[nsKey] = { namespace: e.node.namespace, key: e.node.key, count: 0, sampleValues: [] };
+        allMeta[nsKey].count++;
+        if (allMeta[nsKey].sampleValues.length < 3) allMeta[nsKey].sampleValues.push(e.node.value?.substring(0, 100));
+      }
+    }
+    res.json({
+      totalProducts: products.length,
+      productsWithMetafields: productsWithMeta,
+      metafields: Object.values(allMeta).sort((a, b) => b.count - a.count),
+      tip: 'If you use a "Back in Stock" or "Notify Me" app (Klaviyo, Swym, Appikon, etc.), its subscriber data should appear here as metafields. If none show alert/notify/waitlist data, the app may store data externally.',
+    });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 

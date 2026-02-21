@@ -870,28 +870,28 @@ async function loadForecast() {
 
     $('#content').innerHTML = `
       <div class="kpi-grid" style="grid-template-columns:repeat(4,1fr)">
-        <div class="kpi-card">
+        <div class="kpi-card clickable" onclick="navigateTo('alerts')">
           <div class="kpi-icon" style="background:var(--red-soft);color:var(--red)">💰</div>
           <div class="kpi-data">
             <div class="kpi-value" style="font-size:18px">${fmtMoney(s.totalRevenueAtRisk)}</div>
-            <div class="kpi-label">Revenue at Risk ${infoTip('Potential lost revenue in the next 30 days if stock-outs are not addressed.')}</div>
+            <div class="kpi-label">Revenue at Risk ${infoTip('Potential lost revenue in the next 30 days if stock-outs are not addressed. Click to view alerts.')}</div>
           </div>
         </div>
-        <div class="kpi-card">
+        <div class="kpi-card clickable" data-fcclick="stockout30">
           <div class="kpi-icon" style="background:var(--orange-soft);color:var(--orange)">📅</div>
           <div class="kpi-data">
             <div class="kpi-value" style="font-size:18px">${s.stockOutIn30}</div>
-            <div class="kpi-label">Stock-Out in 30d ${infoTip('Products that will run out of stock within 30 days based on weighted demand forecasting.')}</div>
+            <div class="kpi-label">Stock-Out in 30d ${infoTip('Products that will run out of stock within 30 days based on weighted demand forecasting. Click to filter.')}</div>
           </div>
         </div>
-        <div class="kpi-card">
+        <div class="kpi-card clickable" data-fcclick="projected">
           <div class="kpi-icon" style="background:var(--green-soft);color:var(--green)">📈</div>
           <div class="kpi-data">
             <div class="kpi-value" style="font-size:18px">${fmtMoney(s.totalProjectedRevenue30d)}</div>
             <div class="kpi-label">Projected Revenue (30d) ${infoTip('Estimated revenue from inventory sales in the next 30 days based on current demand forecast.')}</div>
           </div>
         </div>
-        <div class="kpi-card">
+        <div class="kpi-card clickable" data-fcclick="sellthrough">
           <div class="kpi-icon" style="background:var(--accent-soft);color:var(--accent)">📊</div>
           <div class="kpi-data">
             <div class="kpi-value" style="font-size:18px">${s.avgSellThrough}%</div>
@@ -901,19 +901,19 @@ async function loadForecast() {
       </div>
 
       <div class="kpi-grid" style="grid-template-columns:repeat(4,1fr);margin-top:-8px">
-        <div class="kpi-card mini">
+        <div class="kpi-card mini clickable" data-fcclick="out">
           <div class="kpi-value" style="color:var(--red);font-size:20px">${s.alreadyOut}</div>
           <div class="kpi-label">Out of Stock</div>
         </div>
-        <div class="kpi-card mini">
+        <div class="kpi-card mini clickable" data-fcclick="table">
           <div class="kpi-value" style="color:var(--yellow);font-size:20px">${fmtMoney(s.totalInventoryValue)}</div>
           <div class="kpi-label">Inventory Value</div>
         </div>
-        <div class="kpi-card mini">
+        <div class="kpi-card mini clickable" data-fcclick="accelerating">
           <div class="kpi-value" style="color:var(--green);font-size:20px">${s.accelerating}</div>
           <div class="kpi-label">Accelerating ↑</div>
         </div>
-        <div class="kpi-card mini">
+        <div class="kpi-card mini clickable" data-fcclick="declining">
           <div class="kpi-value" style="color:var(--orange);font-size:20px">${s.declining}</div>
           <div class="kpi-label">Declining ↓</div>
         </div>
@@ -979,6 +979,19 @@ async function loadForecast() {
 
     $('#fcSearch').addEventListener('input', e => { searchTerm = e.target.value; renderView(); });
 
+    // KPI card click handlers — drill down into filtered table views
+    $$('[data-fcclick]').forEach(card => card.addEventListener('click', () => {
+      const action = card.dataset.fcclick;
+      if (action === 'stockout30' || action === 'out' || action === 'at_risk' || action === 'accelerating' || action === 'declining') {
+        const filterMap = { stockout30: 'at_risk', out: 'out', at_risk: 'at_risk', accelerating: 'accelerating', declining: 'declining' };
+        const filterBtn = document.querySelector(`[data-fcfilter="${filterMap[action]}"]`);
+        if (filterBtn) filterBtn.click();
+      } else if (action === 'table' || action === 'projected' || action === 'sellthrough') {
+        const tableBtn = document.querySelector('[data-fcview="table"]');
+        if (tableBtn) tableBtn.click();
+      }
+    }));
+
     $$('th[data-fcsort]').forEach(th => th.addEventListener('click', () => {
       const c = th.dataset.fcsort;
       if (sortCol === c) sortDir *= -1; else { sortCol = c; sortDir = -1; }
@@ -1013,11 +1026,40 @@ async function loadAlerts() {
     const byGroup = {};
     data.alerts.forEach(a => { if (!byGroup[a.priority]) byGroup[a.priority] = []; byGroup[a.priority].push(a); });
 
+    let velocityMode = 'monthly'; // 'weekly' | 'monthly'
+
+    function renderAlertTables() {
+      const velLabel = velocityMode === 'weekly' ? 'Weekly' : 'Monthly';
+      const velSuffix = velocityMode === 'weekly' ? '/wk' : '/mo';
+      return groups.map(g => {
+        const items = byGroup[g.key] || [];
+        if (!items.length) return '';
+        const alertTips = { CRITICAL: 'These items are out of stock and have proven sales — they are losing you revenue right now.', URGENT: 'These items will run out within 14 days at current sales pace.', REORDER: 'Below safety stock — include in your next purchase order.', WATCH: 'Stock is getting low, keep an eye on these this week.' };
+        return `<div class="section"><div class="section-header"><h2 class="section-title" style="color:${g.color}">${g.title} (${items.length}) ${infoTip(alertTips[g.key] || '')}</h2></div>
+          <div class="table-wrap"><table><thead><tr><th>Product</th><th>Variant</th><th>SKU</th><th style="text-align:right">Stock</th><th style="text-align:right">Days Left</th><th style="text-align:right">${velLabel}</th><th style="text-align:right">Order</th><th>Alert Me</th></tr></thead>
+          <tbody>${items.map(a => {
+            const vel = velocityMode === 'weekly' ? (a.weeklyVelocity || Math.round(a.monthlyVelocity / 4.3)) : a.monthlyVelocity;
+            return `<tr>
+            <td>${escHtml(a.product)}</td><td>${a.variant === 'Default Title' ? '—' : escHtml(a.variant)}</td>
+            <td style="font-family:monospace;font-size:12px">${escHtml(a.sku) || '—'}</td>
+            <td style="text-align:right;${a.available <= 0 ? 'color:var(--red);font-weight:600' : ''}">${a.available}</td>
+            <td style="text-align:right">${a.daysOfStock === 999 ? '∞' : a.daysOfStock}</td>
+            <td style="text-align:right">${vel}${velSuffix}</td>
+            <td style="text-align:right;font-weight:600;color:var(--accent)">${a.suggestedQty}</td>
+            <td>${a.alertMeCount > 0 ? '<span style="color:var(--green);font-weight:600">' + a.alertMeCount + ' signup' + (a.alertMeCount > 1 ? 's' : '') + '</span>' : '<span style="color:var(--text-muted)">—</span>'}</td>
+          </tr>`}).join('')}</tbody></table></div></div>`;
+      }).join('');
+    }
+
     const counts = groups.map(g => (byGroup[g.key] || []).length);
     $('#content').innerHTML = `
       <div class="section-header" style="padding:0 0 16px;border:none;display:flex;justify-content:space-between;align-items:center">
         <h2 class="section-title">Low-Stock Alerts (${data.total})</h2>
-        <div style="display:flex;gap:8px">
+        <div style="display:flex;gap:8px;align-items:center">
+          <div class="velocity-toggle" style="display:inline-flex;background:var(--bg);border-radius:8px;padding:2px;margin-right:8px">
+            <button class="filter-btn active" data-vel="monthly" style="padding:4px 12px;font-size:12px;border-radius:6px">Monthly</button>
+            <button class="filter-btn" data-vel="weekly" style="padding:4px 12px;font-size:12px;border-radius:6px">Weekly</button>
+          </div>
           <button class="btn" id="alertExportBtn">📥 Export Alerts</button>
           <button class="btn btn-primary" id="alertNotifyBtn">📧 Send Alert Email</button>
         </div>
@@ -1026,23 +1068,16 @@ async function loadAlerts() {
         ${groups.map((g, i) => `<div class="kpi-card"><div class="kpi-icon" style="background:${g.color}22;color:${g.color}">!</div><div class="kpi-data"><div class="kpi-value" style="color:${g.color}">${counts[i]}</div><div class="kpi-label">${g.key}</div></div></div>`).join('')}
         <div class="kpi-card"><div class="kpi-icon" style="background:var(--red-soft);color:var(--red)">💰</div><div class="kpi-data"><div class="kpi-value" style="color:var(--red);font-size:16px">${fmtMoney(s.totalRevAtRisk || 0)}</div><div class="kpi-label">Rev at Risk ${infoTip('Monthly revenue at risk from out-of-stock products with proven sales history.')}</div></div></div>
       </div>
-      ${groups.map(g => {
-        const items = byGroup[g.key] || [];
-        if (!items.length) return '';
-        const alertTips = { CRITICAL: 'These items are out of stock and have proven sales — they are losing you revenue right now.', URGENT: 'These items will run out within 14 days at current sales pace.', REORDER: 'Below safety stock — include in your next purchase order.', WATCH: 'Stock is getting low, keep an eye on these this week.' };
-        return `<div class="section"><div class="section-header"><h2 class="section-title" style="color:${g.color}">${g.title} (${items.length}) ${infoTip(alertTips[g.key] || '')}</h2></div>
-          <div class="table-wrap"><table><thead><tr><th>Product</th><th>Variant</th><th>SKU</th><th style="text-align:right">Stock</th><th style="text-align:right">Days Left</th><th style="text-align:right">Monthly</th><th style="text-align:right">Order</th><th>Alert Me</th></tr></thead>
-          <tbody>${items.map(a => `<tr>
-            <td>${escHtml(a.product)}</td><td>${a.variant === 'Default Title' ? '—' : escHtml(a.variant)}</td>
-            <td style="font-family:monospace;font-size:12px">${escHtml(a.sku) || '—'}</td>
-            <td style="text-align:right;${a.available <= 0 ? 'color:var(--red);font-weight:600' : ''}">${a.available}</td>
-            <td style="text-align:right">${a.daysOfStock === 999 ? '∞' : a.daysOfStock}</td>
-            <td style="text-align:right">${a.monthlyVelocity}/mo</td>
-            <td style="text-align:right;font-weight:600;color:var(--accent)">${a.suggestedQty}</td>
-            <td>${a.alertMe ? '<span style="color:var(--green);font-weight:600">✓ Active</span>' : '<span style="color:var(--text-muted)">—</span>'}</td>
-          </tr>`).join('')}</tbody></table></div></div>`;
-      }).join('')}
+      <div id="alertTablesWrap">${renderAlertTables()}</div>
       ${data.total === 0 ? '<div class="empty-state"><h3>All Clear!</h3><p>No low-stock alerts right now.</p></div>' : ''}`;
+
+    // Weekly/Monthly velocity toggle
+    $$('[data-vel]').forEach(btn => btn.addEventListener('click', () => {
+      $$('[data-vel]').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      velocityMode = btn.dataset.vel;
+      document.getElementById('alertTablesWrap').innerHTML = renderAlertTables();
+    }));
 
     // Email notification button
     document.getElementById('alertNotifyBtn')?.addEventListener('click', async () => {
@@ -1061,8 +1096,10 @@ async function loadAlerts() {
     document.getElementById('alertExportBtn')?.addEventListener('click', () => {
       exportCSV(data.alerts.map(a => ({
         Priority: a.priority, Product: a.product, Variant: a.variant, SKU: a.sku,
-        Stock: a.available, DaysLeft: a.daysOfStock, MonthlyVelocity: a.monthlyVelocity,
-        SuggestedOrder: a.suggestedQty, AlertMe: a.alertMe ? 'Yes' : 'No',
+        Stock: a.available, DaysLeft: a.daysOfStock,
+        WeeklyVelocity: a.weeklyVelocity || Math.round(a.monthlyVelocity / 4.3),
+        MonthlyVelocity: a.monthlyVelocity,
+        SuggestedOrder: a.suggestedQty, AlertMeSignups: a.alertMeCount || 0,
       })), `low-stock-alerts-${new Date().toISOString().split('T')[0]}.csv`);
     });
   } catch (err) { $('#content').innerHTML = `<div class="empty-state"><h3>Error</h3><p>${escHtml(err.message)}</p></div>`; }
