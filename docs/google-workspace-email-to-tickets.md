@@ -220,6 +220,19 @@ Add the standard properties:
 Optional tuning:
 - `KLO_LOOKBACK_DAYS` (default 7)
 
+## Optional: AI triage (recommended if filters are too brittle)
+
+If Gmail filters are too hard to maintain, you can add an **AI triage** step that reads each email and applies the same labels you already use:
+- `KLO/ToTicket/Support`
+- `KLO/ToTicket/Reviews`
+
+This is still “no subscription” (it’s just an API key), but it may be subject to free-tier quotas depending on Google’s current pricing.
+
+Add Script Property:
+- `KLO_GEMINI_API_KEY` = a key from Google AI Studio
+
+Then use the updated script in [docs/apps-script/klo-gmail-ingest-auto.js](docs/apps-script/klo-gmail-ingest-auto.js).
+
 ## Apps Script Code (Script-only)
 
 ```javascript

@@ -56,6 +56,9 @@ We can skip Gmail filters entirely and use the **Script-only Auto Rules** setup.
 It automatically ignores common Shopify notification emails and creates tickets for customer emails + review emails.
 See: `docs/google-workspace-email-to-tickets.md` → “Script-only Option”.
 
+If the Auto Rules are still too noisy, we can optionally enable **AI triage** in the script.
+That will read the email and apply the same labels (`KLO/ToTicket/Support` vs `KLO/ToTicket/Reviews`) automatically.
+
 ## What Munir will do (one-time backend setup)
 
 1. Ensure the app is deployed on Render with the email-ingestion endpoint enabled.
