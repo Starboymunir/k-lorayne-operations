@@ -27,6 +27,28 @@
   --topbar-height: 64px;
 }
 
+/* Light theme override (toggled via body.theme-light) */
+body.theme-light {
+  --bg: #f7f8fb;
+  --bg-card: #ffffff;
+  --bg-card-hover: #f1f3f9;
+  --bg-sidebar: #ffffff;
+  --border: #e6e8f0;
+  --text: #0f172a;
+  --text-dim: #475569;
+  --text-muted: #64748b;
+}
+
+body.theme-light .sr-item + .sr-item { border-top: 1px solid rgba(15,23,42,.08); }
+body.theme-light .ticket-card:hover { background: rgba(15,23,42,.03); }
+body.theme-light .note-item { border-bottom: 1px solid rgba(15,23,42,.08); }
+body.theme-light .cat-bar-wrap { background: rgba(15,23,42,.06); }
+body.theme-light .clickable:hover,
+body.theme-light .clickable-row:hover { background: rgba(15,23,42,.03); }
+body.theme-light .badge-customer { background: rgba(15,23,42,.06); color: var(--text-dim); }
+body.theme-light .badge-new,
+body.theme-light .badge-nosales { background: rgba(15,23,42,.04); color: var(--text-muted); }
+
 * { box-sizing: border-box; margin: 0; padding: 0; }
 
 body {

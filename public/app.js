@@ -205,6 +205,21 @@ function toast(msg, type = 'info') {
   setTimeout(() => { el.classList.remove('show'); setTimeout(() => el.remove(), 300); }, 3000);
 }
 
+// ─── THEME ─────────────────────────────────────
+
+const THEME_STORAGE_KEY = 'kloTheme';
+
+function applyTheme(theme) {
+  const t = theme === 'dark' ? 'dark' : 'light';
+  document.body.classList.toggle('theme-light', t === 'light');
+  try { localStorage.setItem(THEME_STORAGE_KEY, t); } catch {}
+  return t;
+}
+
+function getStoredTheme() {
+  try { return localStorage.getItem(THEME_STORAGE_KEY); } catch { return null; }
+}
+
 // ─── GLOBAL SEARCH ──────────────────────────────
 
 let searchTimeout;
@@ -242,6 +257,14 @@ $('#globalSearch').addEventListener('blur', () => setTimeout(() => $('#searchRes
 // ─── BOOT ───────────────────────────────────────
 
 (async function boot() {
+  // Apply theme ASAP (local override first, then server settings)
+  const stored = getStoredTheme();
+  if (stored) applyTheme(stored);
+  try {
+    const s = await (await fetch('/api/crm/settings')).json();
+    if (s && s.theme) applyTheme(s.theme);
+  } catch {}
+
   // Pre-fetch glossary
   getGlossary();
   try {
@@ -510,9 +533,17 @@ async function loadOrders() {
 
 async function loadOrderDetail(orderId) {
   try {
-    const { orders } = await (await fetch('/api/orders')).json();
-    const order = orders.find(o => o.id === orderId);
+    let resolvedOrderId = orderId;
+    try { resolvedOrderId = decodeURIComponent(orderId); } catch {}
+
+    const [ordersData, ticketsData] = await Promise.all([
+      (await fetch('/api/orders')).json(),
+      (await fetch(`/api/tickets?orderId=${encodeURIComponent(resolvedOrderId)}`)).json(),
+    ]);
+    const order = (ordersData.orders || []).find(o => o.id === resolvedOrderId);
     if (!order) throw new Error('Order not found');
+
+    const linkedTickets = (ticketsData.tickets || []).slice(0, 10);
 
     $('#content').innerHTML = `
       <div style="margin-bottom:16px"><button class="btn btn-sm" onclick="navigateTo('orders')">← Back to Orders</button></div>
@@ -531,7 +562,34 @@ async function loadOrderDetail(orderId) {
           <div><span class="profile-stat-val">${order.itemCount}</span><span class="profile-stat-lbl">Items</span></div>
           ${parseFloat(order.refunded) > 0 ? `<div><span class="profile-stat-val" style="color:var(--red)">${fmtMoney(order.refunded)}</span><span class="profile-stat-lbl">Refunded</span></div>` : ''}
         </div>
+        <div style="display:flex;flex-direction:column;gap:8px;align-items:flex-end;flex-shrink:0;">
+          <button class="btn btn-sm btn-primary" id="odNewTicketBtn">+ New Ticket</button>
+          <button class="btn btn-sm" id="odAddrTicketBtn">Address Change</button>
+        </div>
       </div>
+
+      <div class="section">
+        <div class="section-header"><h2 class="section-title">Linked Tickets (${linkedTickets.length})</h2></div>
+        <div style="padding:14px 16px;">
+          ${linkedTickets.length ? `
+            <div style="display:flex;flex-direction:column;gap:10px;">
+              ${linkedTickets.map(t => `
+                <div class="ticket-card" onclick="navigateTo('ticket-detail', '${t.id}')">
+                  <div class="ticket-card-top">
+                    <span class="ticket-id">${t.id}</span>
+                    ${channelBadge(t.channel || 'shopify')}
+                    ${statusBadge(t.status)} ${ticketPriorityBadge(t.priority)}
+                    <span class="ticket-category">${categoryLabel(t.category)}</span>
+                    <span class="ticket-time">${timeAgo(t.createdAt)}</span>
+                  </div>
+                  <div class="ticket-card-subject">${escHtml(t.subject)}</div>
+                </div>
+              `).join('')}
+            </div>
+          ` : `<div style="color:var(--text-muted);font-size:13px">No tickets linked to this order yet.</div>`}
+        </div>
+      </div>
+
       <div class="section">
         <div class="section-header"><h2 class="section-title">Line Items</h2></div>
         <div class="table-wrap"><table><thead><tr><th>Product</th><th>SKU</th><th style="text-align:right">Qty</th></tr></thead>
@@ -543,6 +601,35 @@ async function loadOrderDetail(orderId) {
       </div>
       ${order.customerId ? `<div style="margin-top:12px"><button class="btn" onclick="navigateTo('customer-profile','${encodeURIComponent(order.customerId)}')">View Customer Profile →</button></div>` : ''}
     `;
+
+    const encName = encodeURIComponent(order.customer || '');
+    const encEmail = encodeURIComponent(order.customerEmail || '');
+    const encCustomerId = order.customerId ? encodeURIComponent(order.customerId) : null;
+
+    const basePrefill = {
+      orderId: resolvedOrderId,
+      orderName: order.name,
+    };
+    $('#odNewTicketBtn')?.addEventListener('click', () => {
+      showNewTicketModal(encCustomerId, encName, encEmail, {
+        ...basePrefill,
+        category: 'general',
+        priority: 'medium',
+        channel: 'shopify',
+        subject: `Support request — ${order.name}`,
+        description: `Order: ${order.name}\nCustomer: ${order.customer || 'Guest'}\n\nDescribe the request here...`,
+      });
+    });
+    $('#odAddrTicketBtn')?.addEventListener('click', () => {
+      showNewTicketModal(encCustomerId, encName, encEmail, {
+        ...basePrefill,
+        category: 'shipping',
+        priority: 'high',
+        channel: 'email',
+        subject: `Shipping address change — ${order.name}`,
+        description: `Customer requested a shipping address change.\n\nOrder: ${order.name}\nRequested change: (fill in)\n\nNext steps:\n- Verify order not fulfilled\n- Update address in Shopify (if allowed)\n- Confirm with customer`,
+      });
+    });
   } catch (err) { $('#content').innerHTML = `<div class="empty-state"><h3>Error</h3><p>${escHtml(err.message)}</p></div>`; }
 }
 
@@ -1475,22 +1562,24 @@ async function loadTickets() {
 
 // ─── NEW TICKET MODAL ───────────────────────────
 
-function showNewTicketModal(customerId, customerName, customerEmail) {
+function showNewTicketModal(customerId, customerName, customerEmail, prefill = {}) {
+  const p = prefill || {};
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay';
   overlay.innerHTML = `
     <div class="modal">
       <div class="modal-header"><h3>Create Support Ticket</h3><button class="modal-close" id="modalClose">&times;</button></div>
       <div class="modal-body">
+        ${p.orderName ? `<div style="padding:10px 12px;border:1px solid var(--border);border-radius:10px;background:var(--bg);font-size:12px;color:var(--text-dim);margin-bottom:12px">🧾 Linked Order: <strong>${escHtml(p.orderName)}</strong></div>` : ''}
         <div class="form-group"><label>Customer Name</label><input type="text" id="tkName" class="form-input" value="${escHtml(decodeURIComponent(customerName || ''))}" placeholder="Customer name"></div>
         <div class="form-group"><label>Customer Email</label><input type="email" id="tkEmail" class="form-input" value="${escHtml(decodeURIComponent(customerEmail || ''))}" placeholder="email@example.com"></div>
         <div class="form-row">
-          <div class="form-group"><label>Category</label><select id="tkCategory" class="form-input">${_categories.map(c => `<option value="${c.id}">${c.icon} ${c.label}</option>`).join('')}</select></div>
-          <div class="form-group"><label>Priority</label><select id="tkPriority" class="form-input"><option value="low">Low</option><option value="medium" selected>Medium</option><option value="high">High</option><option value="urgent">Urgent</option></select></div>
+          <div class="form-group"><label>Category</label><select id="tkCategory" class="form-input">${_categories.map(c => `<option value="${c.id}" ${p.category === c.id ? 'selected' : ''}>${c.icon} ${c.label}</option>`).join('')}</select></div>
+          <div class="form-group"><label>Priority</label><select id="tkPriority" class="form-input"><option value="low" ${p.priority === 'low' ? 'selected' : ''}>Low</option><option value="medium" ${(p.priority || 'medium') === 'medium' ? 'selected' : ''}>Medium</option><option value="high" ${p.priority === 'high' ? 'selected' : ''}>High</option><option value="urgent" ${p.priority === 'urgent' ? 'selected' : ''}>Urgent</option></select></div>
         </div>
-        <div class="form-group"><label>Channel</label><select id="tkChannel" class="form-input"><option value="shopify">🛍 Shopify</option><option value="email">📧 Email</option><option value="social_fb">📘 Facebook</option><option value="social_ig">📷 Instagram</option><option value="social_tiktok">🎵 TikTok</option><option value="manual">✏️ Manual</option></select></div>
-        <div class="form-group"><label>Subject</label><input type="text" id="tkSubject" class="form-input" placeholder="Brief description"></div>
-        <div class="form-group"><label>Description</label><textarea id="tkDesc" class="form-input form-textarea" placeholder="Full details..."></textarea></div>
+        <div class="form-group"><label>Channel</label><select id="tkChannel" class="form-input"><option value="shopify" ${(p.channel || 'shopify') === 'shopify' ? 'selected' : ''}>🛍 Shopify</option><option value="email" ${p.channel === 'email' ? 'selected' : ''}>📧 Email</option><option value="social_fb" ${p.channel === 'social_fb' ? 'selected' : ''}>📘 Facebook</option><option value="social_ig" ${p.channel === 'social_ig' ? 'selected' : ''}>📷 Instagram</option><option value="social_tiktok" ${p.channel === 'social_tiktok' ? 'selected' : ''}>🎵 TikTok</option><option value="manual" ${p.channel === 'manual' ? 'selected' : ''}>✏️ Manual</option></select></div>
+        <div class="form-group"><label>Subject</label><input type="text" id="tkSubject" class="form-input" placeholder="Brief description" value="${escHtml(p.subject || '')}"></div>
+        <div class="form-group"><label>Description</label><textarea id="tkDesc" class="form-input form-textarea" placeholder="Full details...">${escHtml(p.description || '')}</textarea></div>
       </div>
       <div class="modal-footer"><button class="btn" id="modalCancel">Cancel</button><button class="btn btn-primary" id="modalSubmit">Create Ticket</button></div>
     </div>`;
@@ -1512,6 +1601,8 @@ function showNewTicketModal(customerId, customerName, customerEmail) {
       channel: overlay.querySelector('#tkChannel').value,
       subject: overlay.querySelector('#tkSubject').value || '(no subject)',
       description: overlay.querySelector('#tkDesc').value || '',
+      orderId: p.orderId || null,
+      orderName: p.orderName || null,
     };
     try {
       const r = await fetch('/api/tickets', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
@@ -2431,6 +2522,7 @@ async function loadSettings() {
             <div class="form-group"><label>SLA Response Time (Hours)</label><input type="number" id="sSlaResponse" class="form-input" value="${settings.slaResponseHours || 24}"></div>
             <div class="form-group"><label>SLA Resolution Time (Hours)</label><input type="number" id="sSlaResolution" class="form-input" value="${settings.slaResolutionHours || 48}"></div>
             <div class="form-group"><label>Business Name</label><input type="text" id="sBizName" class="form-input" value="${escHtml(settings.businessName || '')}"></div>
+            <div class="form-group"><label>Theme</label><select id="sTheme" class="form-input"><option value="light" ${(settings.theme || 'light') === 'light' ? 'selected' : ''}>Light</option><option value="dark" ${settings.theme === 'dark' ? 'selected' : ''}>Dark</option></select></div>
             <button class="btn btn-primary" id="saveSettingsBtn">Save Settings</button>
           </div>
         </div>
@@ -2499,6 +2591,8 @@ async function loadSettings() {
     `;
 
     $('#saveSettingsBtn').addEventListener('click', async () => {
+      const theme = $('#sTheme').value;
+      applyTheme(theme);
       await fetch('/api/crm/settings', {
         method: 'PATCH', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -2506,6 +2600,7 @@ async function loadSettings() {
           slaResponseHours: parseInt($('#sSlaResponse').value) || 24,
           slaResolutionHours: parseInt($('#sSlaResolution').value) || 48,
           businessName: $('#sBizName').value,
+          theme,
         }),
       });
       toast('Settings saved', 'success');

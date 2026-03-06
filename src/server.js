@@ -560,12 +560,25 @@ async function refreshCustomersInBackground(products, orders, lastTimestamp) {
 
 function autoSeedTickets(orders, customers) {
   const existing = getTickets({});
-  const existingOrderIds = new Set(existing.map(t => t.orderId).filter(Boolean));
+  const existingSeedKeys = new Set();
+
+  function inferSeedKeyFromTicket(t) {
+    if (!t?.orderId) return null;
+    if (t.seedKey) return t.seedKey;
+    const subj = String(t.subject || '').toLowerCase();
+    if (subj.startsWith('cancelled order')) return `${t.orderId}|cancelled`;
+    if (subj.startsWith('refund on order')) return `${t.orderId}|refunded`;
+    if (subj.startsWith('unfulfilled order')) return `${t.orderId}|unfulfilled`;
+    return `${t.orderId}|order`;
+  }
+
+  for (const t of existing) {
+    const k = inferSeedKeyFromTicket(t);
+    if (k) existingSeedKeys.add(k);
+  }
 
   let seeded = 0;
   for (const order of orders) {
-    if (existingOrderIds.has(order.id)) continue;
-
     const custName = order.customer?.displayName || 'Unknown';
     const custEmail = order.customer?.email || '';
     const custId = order.customer?.id || null;
@@ -573,9 +586,12 @@ function autoSeedTickets(orders, customers) {
 
     // Cancelled orders
     if (order.cancelledAt) {
+      const seedKey = `${order.id}|cancelled`;
+      if (existingSeedKeys.has(seedKey)) continue;
       createTicket({
         customerId: custId, customerName: custName, customerEmail: custEmail,
         category: 'returns', priority: 'medium', orderId: order.id, orderName: order.name,
+        seedKey,
         subject: `Cancelled Order ${order.name}`,
         description: `Order ${order.name} was cancelled. Reason: ${order.cancelReason || 'Not specified'}. Total: $${orderTotal}\n\nCustomer may need follow-up regarding refund or exchange.`,
       });
@@ -586,9 +602,12 @@ function autoSeedTickets(orders, customers) {
     // Refunded orders
     const refunded = parseFloat(order.totalRefundedSet?.shopMoney?.amount || 0);
     if (refunded > 0) {
+      const seedKey = `${order.id}|refunded`;
+      if (existingSeedKeys.has(seedKey)) continue;
       createTicket({
         customerId: custId, customerName: custName, customerEmail: custEmail,
         category: 'returns', priority: 'medium', orderId: order.id, orderName: order.name,
+        seedKey,
         subject: `Refund on Order ${order.name} — $${refunded.toFixed(2)}`,
         description: `A refund of $${refunded.toFixed(2)} was processed on order ${order.name} (total: $${orderTotal}).\n\nCheck if customer satisfaction follow-up is needed.`,
       });
@@ -601,10 +620,13 @@ function autoSeedTickets(orders, customers) {
         order.displayFulfillmentStatus === 'UNFULFILLED') {
       const daysSinceOrder = (Date.now() - new Date(order.createdAt)) / 86400000;
       if (daysSinceOrder > 7) {
+        const seedKey = `${order.id}|unfulfilled`;
+        if (existingSeedKeys.has(seedKey)) continue;
         createTicket({
           customerId: custId, customerName: custName, customerEmail: custEmail,
           category: 'shipping', priority: daysSinceOrder > 14 ? 'high' : 'medium',
           orderId: order.id, orderName: order.name,
+          seedKey,
           subject: `Unfulfilled Order ${order.name} — ${Math.round(daysSinceOrder)} days`,
           description: `Order ${order.name} has been paid but unfulfilled for ${Math.round(daysSinceOrder)} days.\nTotal: $${orderTotal}\n\nCustomer: ${custName} (${custEmail})`,
         });
@@ -1795,6 +1817,54 @@ app.put('/api/customers/:shopifyId/tags', (req, res) => {
 });
 
 // ─── CRM: TICKETS ──────────────────────────────
+
+// Inbound message ingestion (optional)
+// Use this to push customer inquiries (email/DM) into Tickets via Zapier/Make/Webhooks.
+// Security: if INBOUND_TOKEN is set, requests must include header `x-inbound-token: <token>`.
+function requireInboundToken(req, res, next) {
+  const token = process.env.INBOUND_TOKEN;
+  if (!token) return next();
+  const provided = req.get('x-inbound-token');
+  if (!provided || provided !== token) return res.status(401).json({ error: 'Unauthorized' });
+  return next();
+}
+
+app.post('/api/inbound/tickets', requireInboundToken, (req, res) => {
+  try {
+    const body = req.body || {};
+
+    // Optional idempotency: if the caller provides a stable external message ID,
+    // we can prevent duplicates when automations retry.
+    const externalId = body.externalId || body.messageId || body.emailMessageId || null;
+    const seedKey = externalId ? `inbound|${String(externalId)}` : (body.seedKey || null);
+    if (seedKey) {
+      const existing = getTickets({}).find(t => t.seedKey === seedKey);
+      if (existing) return res.status(200).json(existing);
+    }
+
+    const ticket = createTicket({
+      customerId: body.customerId || null,
+      customerName: body.customerName || body.fromName || 'Unknown',
+      customerEmail: body.customerEmail || body.fromEmail || '',
+      category: body.category || 'general',
+      priority: body.priority || 'medium',
+      channel: body.channel || body.source || 'email',
+      subject: body.subject || '(no subject)',
+      description: body.description || body.body || '',
+      orderId: body.orderId || null,
+      orderName: body.orderName || null,
+      assignee: body.assignee,
+      seedKey,
+    });
+    logActivity(body.actor || 'System', 'inbound_ticket_created', `Inbound ticket: ${ticket.subject}`, {
+      ticketId: ticket.id,
+      channel: ticket.channel,
+    });
+    res.status(201).json(ticket);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 app.get('/api/tickets', (req, res) => {
   try {

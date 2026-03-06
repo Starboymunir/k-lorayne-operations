@@ -39,6 +39,7 @@ const DEFAULT_STORE = {
     { id: 'vip', label: 'VIP Follow-up', icon: '⭐', color: '#f59e0b' },
   ],
   settings: {
+    theme: 'light',
     autoAssignee: 'Krystle',
     slaResponseHours: 24,
     slaResolutionHours: 48,
@@ -150,6 +151,7 @@ export function createTicket(data) {
     assignee: data.assignee || store.settings.autoAssignee,
     orderId: data.orderId || null,
     orderName: data.orderName || null,
+    seedKey: data.seedKey || null,
     channel: data.channel || 'shopify',   // shopify | email | social_fb | social_ig | social_tiktok | manual
     notes: [],
     createdAt: new Date().toISOString(),

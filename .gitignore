@@ -6,3 +6,10 @@ data/customers-cache.json
 server.log
 upwork-chat.txt
 *.old.*
+
+# Local artifacts (not part of app source)
+Screenshot_*.jpeg
+Screenshot_*.jpg
+WhatsApp Video*.mp4
+screenshot-ocr.txt
+tmp-ocr.txt
