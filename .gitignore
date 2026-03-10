@@ -2,7 +2,7 @@ node_modules/
 .env
 *.log
 output/
-data/customers-cache.json
+data/
 server.log
 upwork-chat.txt
 *.old.*

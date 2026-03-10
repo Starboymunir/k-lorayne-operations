@@ -95,8 +95,10 @@ function load() {
       };
       const changed = repairDuplicateTicketIds(hydrated);
       if (changed) save(hydrated);
+      console.log(`[crm-store] Loaded ${hydrated.tickets.length} tickets from ${STORE_FILE}`);
       return hydrated;
     }
+    console.log(`[crm-store] No store file found at ${STORE_FILE} — starting fresh`);
   } catch (err) {
     console.error('[crm-store] Load error, using defaults:', err.message);
   }

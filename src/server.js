@@ -609,6 +609,7 @@ function autoSeedTickets(orders, customers) {
         customerId: custId, customerName: custName, customerEmail: custEmail,
         category: 'returns', priority: 'medium', orderId: order.id, orderName: order.name,
         seedKey,
+        createdAt: order.cancelledAt || order.createdAt,
         subject: `Cancelled Order ${order.name}`,
         description: `Order ${order.name} was cancelled. Reason: ${order.cancelReason || 'Not specified'}. Total: $${orderTotal}\n\nCustomer may need follow-up regarding refund or exchange.`,
       });
@@ -625,6 +626,7 @@ function autoSeedTickets(orders, customers) {
         customerId: custId, customerName: custName, customerEmail: custEmail,
         category: 'returns', priority: 'medium', orderId: order.id, orderName: order.name,
         seedKey,
+        createdAt: order.createdAt,
         subject: `Refund on Order ${order.name} — $${refunded.toFixed(2)}`,
         description: `A refund of $${refunded.toFixed(2)} was processed on order ${order.name} (total: $${orderTotal}).\n\nCheck if customer satisfaction follow-up is needed.`,
       });
@@ -644,6 +646,7 @@ function autoSeedTickets(orders, customers) {
           category: 'shipping', priority: daysSinceOrder > 14 ? 'high' : 'medium',
           orderId: order.id, orderName: order.name,
           seedKey,
+          createdAt: order.createdAt,
           subject: `Unfulfilled Order ${order.name} — ${Math.round(daysSinceOrder)} days`,
           description: `Order ${order.name} has been paid but unfulfilled for ${Math.round(daysSinceOrder)} days.\nTotal: $${orderTotal}\n\nCustomer: ${custName} (${custEmail})`,
         });
