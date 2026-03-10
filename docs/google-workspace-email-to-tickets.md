@@ -21,6 +21,7 @@ In the `contact@kloapparel.com` Gmail account, create labels:
 - `KLO/ToTicket/Support`
 - `KLO/ToTicket/Reviews`
 - `KLO/Processed` (script will apply this after ingest)
+- `KLO/Ingested` (script-owned marker so it knows what it already ingested)
 
 ## 3) Gmail: create filters (decide what becomes a ticket)
 
@@ -145,6 +146,7 @@ function processLabel_(labelName, processedLabel, inboundUrl, inboundToken, defa
       externalId: externalId,
       fromName: fromName,
       fromEmail: fromEmail,
+      createdAt: m.getDate && m.getDate() ? m.getDate().toISOString() : null,
       subject: subject,
       body: body,
       channel: defaults.channel,
@@ -208,6 +210,7 @@ How it works:
 
 This option does not require Gmail filters. It will add labels itself:
 - `KLO/Processed` (ingested)
+- `KLO/Ingested` (ingested; script-owned marker)
 - `KLO/Ignored` (skipped as system notification)
 
 ## Script Properties (recommended)

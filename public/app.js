@@ -50,6 +50,9 @@ function startStatusPolling() {
 }
 function stopStatusPolling() { clearInterval(_statusInterval); _statusInterval = null; }
 
+let _ticketsAutoRefreshInterval = null;
+function stopTicketsAutoRefresh() { clearInterval(_ticketsAutoRefreshInterval); _ticketsAutoRefreshInterval = null; }
+
 // ─── NAVIGATION ─────────────────────────────────
 
 $$('.nav-item').forEach(item => {
@@ -75,6 +78,7 @@ $('#refreshBtn').addEventListener('click', async () => {
 });
 
 function navigateTo(page, params) {
+  stopTicketsAutoRefresh();
   currentPage = page;
   $$('.nav-item').forEach(n => n.classList.remove('active'));
   const navEl = $(`.nav-item[data-page="${page}"]`);
@@ -118,7 +122,49 @@ function showLoading() {
 function fmt(n) { return Number(n).toLocaleString(); }
 function fmtMoney(n) { return '$' + Number(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
 function fmtDate(d) { return d ? new Date(d).toLocaleDateString() : '—'; }
-function fmtDateTime(d) { return d ? new Date(d).toLocaleString() : '—'; }
+function fmtDateTime(d) {
+  if (!d) return '—';
+  const date = new Date(d);
+  if (Number.isNaN(date.getTime())) return '—';
+  try {
+    return new Intl.DateTimeFormat(undefined, {
+      year: 'numeric', month: 'short', day: '2-digit',
+      hour: 'numeric', minute: '2-digit',
+      timeZoneName: 'short',
+    }).format(date);
+  } catch {
+    return date.toLocaleString();
+  }
+}
+function fmtTicketCardTime(d) {
+  if (!d) return '—';
+  const date = new Date(d);
+  if (Number.isNaN(date.getTime())) return '—';
+
+  const now = new Date();
+  const sameDay =
+    date.getFullYear() === now.getFullYear() &&
+    date.getMonth() === now.getMonth() &&
+    date.getDate() === now.getDate();
+
+  if (sameDay) {
+    try {
+      return new Intl.DateTimeFormat(undefined, {
+        hour: 'numeric',
+        minute: '2-digit',
+        timeZoneName: 'short',
+      }).format(date);
+    } catch {
+      return date.toLocaleTimeString();
+    }
+  }
+
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const startOfThatDay = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  const daysAgo = Math.floor((startOfToday - startOfThatDay) / 86400000);
+  if (!Number.isFinite(daysAgo) || daysAgo < 0) return fmtDateTime(d);
+  return `${daysAgo}d ago`;
+}
 function timeAgo(d) {
   if (!d) return '—';
   const diff = (Date.now() - new Date(d)) / 1000;
@@ -580,7 +626,7 @@ async function loadOrderDetail(orderId) {
                     ${channelBadge(t.channel || 'shopify')}
                     ${statusBadge(t.status)} ${ticketPriorityBadge(t.priority)}
                     <span class="ticket-category">${categoryLabel(t.category)}</span>
-                    <span class="ticket-time">${timeAgo(t.createdAt)}</span>
+                    <span class="ticket-time">${fmtTicketCardTime(t.createdAt)}</span>
                   </div>
                   <div class="ticket-card-subject">${escHtml(t.subject)}</div>
                 </div>
@@ -1384,7 +1430,7 @@ async function loadCustomerProfile(shopifyId) {
                 <div class="ticket-card-top">
                   <span class="ticket-id">${t.id}</span>
                   ${statusBadge(t.status)} ${ticketPriorityBadge(t.priority)}
-                  <span class="ticket-time">${timeAgo(t.createdAt)}</span>
+                  <span class="ticket-time">${fmtTicketCardTime(t.createdAt)}</span>
                 </div>
                 <div class="ticket-card-subject">${escHtml(t.subject)}</div>
               </div>
@@ -1472,6 +1518,7 @@ async function loadCustomerProfile(shopifyId) {
 
 async function loadTickets() {
   try {
+    stopTicketsAutoRefresh();
     const [tRes, cRes] = await Promise.all([fetch('/api/tickets'), fetch('/api/crm/categories')]);
     const tData = await tRes.json();
     const cData = await cRes.json();
@@ -1501,7 +1548,7 @@ async function loadTickets() {
             ${statusBadge(t.status)} ${ticketPriorityBadge(t.priority)}
             <span class="ticket-category">${categoryLabel(t.category)}</span>
             ${t.orderName ? `<span class="ticket-order">🧾 ${t.orderName}</span>` : ''}
-            <span class="ticket-time">${timeAgo(t.createdAt)}</span>
+            <span class="ticket-time">${fmtTicketCardTime(t.createdAt)}</span>
           </div>
           <div class="ticket-card-subject">${escHtml(t.subject)}</div>
           <div class="ticket-card-meta">
@@ -1519,16 +1566,16 @@ async function loadTickets() {
 
     $('#content').innerHTML = `
       <div class="section-header" style="padding:0 0 16px;border:none;">
-        <h2 class="section-title">Support Tickets (${tData.total})</h2>
+        <h2 class="section-title">Support Tickets (<span id="ticketTotal">${tData.total}</span>)</h2>
         <button class="btn btn-primary" id="newTicketBtn">+ New Ticket</button>
       </div>
 
       <div class="kpi-grid">
-        <div class="kpi-card mini clickable" data-tfilter="active"><div class="kpi-value" style="color:var(--orange);font-size:20px">${activeCount}</div><div class="kpi-label">Active</div></div>
-        <div class="kpi-card mini clickable" data-tfilter="open"><div class="kpi-value" style="color:var(--red);font-size:20px">${sc.open}</div><div class="kpi-label">Open</div></div>
-        <div class="kpi-card mini clickable" data-tfilter="in_progress"><div class="kpi-value" style="color:var(--orange);font-size:20px">${sc.in_progress}</div><div class="kpi-label">In Progress</div></div>
-        <div class="kpi-card mini clickable" data-tfilter="waiting"><div class="kpi-value" style="color:var(--yellow);font-size:20px">${sc.waiting}</div><div class="kpi-label">Waiting</div></div>
-        <div class="kpi-card mini clickable" data-tfilter="all"><div class="kpi-value" style="font-size:20px">${tData.total}</div><div class="kpi-label">All Time</div></div>
+        <div class="kpi-card mini clickable" data-tfilter="active"><div class="kpi-value" style="color:var(--orange);font-size:20px"><span id="kpiActive">${activeCount}</span></div><div class="kpi-label">Active</div></div>
+        <div class="kpi-card mini clickable" data-tfilter="open"><div class="kpi-value" style="color:var(--red);font-size:20px"><span id="kpiOpen">${sc.open}</span></div><div class="kpi-label">Open</div></div>
+        <div class="kpi-card mini clickable" data-tfilter="in_progress"><div class="kpi-value" style="color:var(--orange);font-size:20px"><span id="kpiInProgress">${sc.in_progress}</span></div><div class="kpi-label">In Progress</div></div>
+        <div class="kpi-card mini clickable" data-tfilter="waiting"><div class="kpi-value" style="color:var(--yellow);font-size:20px"><span id="kpiWaiting">${sc.waiting}</span></div><div class="kpi-label">Waiting</div></div>
+        <div class="kpi-card mini clickable" data-tfilter="all"><div class="kpi-value" style="font-size:20px"><span id="kpiAll">${tData.total}</span></div><div class="kpi-label">All Time</div></div>
       </div>
 
       <div class="section">
@@ -1539,7 +1586,7 @@ async function loadTickets() {
           <button class="cat-pill active" data-catf="">All Categories</button>
           ${_categories.map(c => {
             const cnt = tData.tickets.filter(t => t.category === c.id).length;
-            return `<button class="cat-pill" data-catf="${c.id}" style="--cat-color:${c.color}">${c.icon} ${c.label} <span class="cat-pill-count">${cnt}</span></button>`;
+            return `<button class="cat-pill" data-catf="${c.id}" style="--cat-color:${c.color}">${c.icon} ${c.label} <span class="cat-pill-count" data-catcount="${c.id}">${cnt}</span></button>`;
           }).join('')}
         </div>
         <div id="ticketList" class="ticket-list"></div>
@@ -1557,6 +1604,52 @@ async function loadTickets() {
     }));
     $('#newTicketBtn').addEventListener('click', () => showNewTicketModal());
     render();
+
+    let _refreshInFlight = false;
+    async function refreshTicketsSilently() {
+      if (currentPage !== 'tickets') return;
+      const list = document.getElementById('ticketList');
+      if (!list) return;
+      if (_refreshInFlight) return;
+      _refreshInFlight = true;
+      try {
+        const r = await fetch('/api/tickets');
+        const fresh = await r.json();
+        if (!fresh || !Array.isArray(fresh.tickets)) return;
+
+        tData.tickets = fresh.tickets;
+        tData.total = typeof fresh.total === 'number' ? fresh.total : fresh.tickets.length;
+
+        const sc2 = { open: 0, in_progress: 0, waiting: 0, resolved: 0, closed: 0 };
+        tData.tickets.forEach(t => { sc2[t.status] = (sc2[t.status] || 0) + 1; });
+        const active2 = (sc2.open || 0) + (sc2.in_progress || 0) + (sc2.waiting || 0);
+
+        const totalEl = document.getElementById('ticketTotal');
+        if (totalEl) totalEl.textContent = String(tData.total);
+        const kpiActiveEl = document.getElementById('kpiActive');
+        if (kpiActiveEl) kpiActiveEl.textContent = String(active2);
+        const kpiOpenEl = document.getElementById('kpiOpen');
+        if (kpiOpenEl) kpiOpenEl.textContent = String(sc2.open || 0);
+        const kpiInProgEl = document.getElementById('kpiInProgress');
+        if (kpiInProgEl) kpiInProgEl.textContent = String(sc2.in_progress || 0);
+        const kpiWaitingEl = document.getElementById('kpiWaiting');
+        if (kpiWaitingEl) kpiWaitingEl.textContent = String(sc2.waiting || 0);
+        const kpiAllEl = document.getElementById('kpiAll');
+        if (kpiAllEl) kpiAllEl.textContent = String(tData.total);
+
+        _categories.forEach(c => {
+          const cnt = tData.tickets.filter(t => t.category === c.id).length;
+          const el = document.querySelector(`[data-catcount="${c.id}"]`);
+          if (el) el.textContent = String(cnt);
+        });
+
+        render();
+      } catch {}
+      finally { _refreshInFlight = false; }
+    }
+
+    setTimeout(refreshTicketsSilently, 5000);
+    _ticketsAutoRefreshInterval = setInterval(refreshTicketsSilently, 30000);
   } catch (err) { $('#content').innerHTML = `<div class="empty-state"><h3>Error</h3><p>${escHtml(err.message)}</p></div>`; }
 }
 

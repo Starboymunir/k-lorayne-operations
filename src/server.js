@@ -23,6 +23,7 @@ const app = express();
 const PORT = process.env.PORT || 3456;
 const SHOPIFY_API_KEY = process.env.SHOPIFY_CLIENT_ID || '';
 const SHOP_DOMAIN = process.env.SHOPIFY_SHOP ? `${process.env.SHOPIFY_SHOP}.myshopify.com` : '';
+const SERVER_STARTED_AT = new Date().toISOString();
 
 // ─── SHOPIFY EMBED HEADERS (allow iframe in Shopify admin) ───
 app.use((req, res, next) => {
@@ -34,8 +35,24 @@ app.use((req, res, next) => {
   next();
 });
 
-app.use(express.static(join(__dirname, '..', 'public')));
+app.use(express.static(join(__dirname, '..', 'public'), {
+  etag: true,
+  setHeaders: (res, filePath) => {
+    const p = String(filePath || '').replace(/\\/g, '/');
+    if (p.endsWith('/index.html') || p.endsWith('/app.js') || p.endsWith('/styles.css')) {
+      res.setHeader('Cache-Control', 'no-store');
+    }
+  },
+}));
 app.use(express.json());
+
+app.get('/api/version', (req, res) => {
+  res.json({
+    startedAt: SERVER_STARTED_AT,
+    commit: process.env.RENDER_GIT_COMMIT || null,
+    nodeEnv: process.env.NODE_ENV || null,
+  });
+});
 
 // ─── SHOPIFY GRAPHQL QUERIES ───────────────────
 
@@ -1855,6 +1872,7 @@ app.post('/api/inbound/tickets', requireInboundToken, (req, res) => {
       orderName: body.orderName || null,
       assignee: body.assignee,
       seedKey,
+      createdAt: body.createdAt || body.receivedAt || body.timestamp || null,
     });
     logActivity(body.actor || 'System', 'inbound_ticket_created', `Inbound ticket: ${ticket.subject}`, {
       ticketId: ticket.id,

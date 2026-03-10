@@ -23,11 +23,16 @@ function kloIngestAuto() {
   if (!inboundUrl) throw new Error('Missing script property KLO_INBOUND_URL');
 
   const processedLabel = ensureLabel_('KLO/Processed');
+  const ingestedLabel = ensureLabel_('KLO/Ingested');
+  const failedLabel = ensureLabel_('KLO/IngestFailed');
   const ignoredLabel = ensureLabel_('KLO/Ignored');
   const supportLabel = ensureLabel_('KLO/ToTicket/Support');
   const reviewsLabel = ensureLabel_('KLO/ToTicket/Reviews');
 
-  const q = `to:contact@kloapparel.com newer_than:${lookbackDays}d -label:"${processedLabel.getName()}" -label:"${ignoredLabel.getName()}"`;
+  // NOTE: Do NOT use KLO/Processed as the exclusion marker.
+  // Some Gmail filters may apply it automatically, which would prevent ingestion.
+  // We use KLO/Ingested as the script-owned "already ingested" marker.
+  const q = `to:contact@kloapparel.com newer_than:${lookbackDays}d -label:"${ingestedLabel.getName()}" -label:"${ignoredLabel.getName()}"`;
   const threads = GmailApp.search(q, 0, 30);
 
   for (var i = 0; i < threads.length; i++) {
@@ -115,6 +120,7 @@ function kloIngestAuto() {
       externalId: externalId,
       fromName: fromName,
       fromEmail: fromEmail,
+      createdAt: m.getDate && m.getDate() ? m.getDate().toISOString() : null,
       subject: isReview ? `[REVIEW] ${subject}` : subject,
       body: body,
       channel: 'email',
@@ -134,9 +140,13 @@ function kloIngestAuto() {
     const resp = UrlFetchApp.fetch(inboundUrl, options);
     const code = resp.getResponseCode();
     if (code >= 200 && code < 300) {
+      thread.addLabel(ingestedLabel);
       thread.addLabel(processedLabel);
+      // Clear any previous failure marker
+      try { thread.removeLabel(failedLabel); } catch (e) {}
     } else {
       Logger.log('Failed ingest HTTP ' + code + ': ' + resp.getContentText());
+      thread.addLabel(failedLabel);
     }
   }
 }

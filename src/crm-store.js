@@ -53,6 +53,31 @@ const DEFAULT_STORE = {
   },
 };
 
+function repairDuplicateTicketIds(storeObj) {
+  const tickets = Array.isArray(storeObj?.tickets) ? storeObj.tickets : [];
+  if (tickets.length === 0) return false;
+
+  const seen = new Set();
+  let changed = false;
+
+  for (const t of tickets) {
+    if (!t || typeof t !== 'object') continue;
+    const cur = String(t.id || '');
+    if (!cur || !cur.startsWith('TK-')) {
+      t.id = `TK-${randomUUID().split('-')[0].toUpperCase()}`;
+      changed = true;
+      continue;
+    }
+    if (seen.has(cur)) {
+      t.id = `TK-${randomUUID().split('-')[0].toUpperCase()}`;
+      changed = true;
+      continue;
+    }
+    seen.add(cur);
+  }
+  return changed;
+}
+
 // ─── LOAD / SAVE ───────────────────────────────
 
 function load() {
@@ -60,7 +85,7 @@ function load() {
     if (existsSync(STORE_FILE)) {
       const raw = readFileSync(STORE_FILE, 'utf-8');
       const parsed = JSON.parse(raw);
-      return {
+      const hydrated = {
         ...DEFAULT_STORE,
         ...parsed,
         activityLog: parsed.activityLog || [],
@@ -68,6 +93,9 @@ function load() {
         savedReplies: parsed.savedReplies || DEFAULT_STORE.savedReplies,
         settings: { ...DEFAULT_STORE.settings, ...parsed.settings },
       };
+      const changed = repairDuplicateTicketIds(hydrated);
+      if (changed) save(hydrated);
+      return hydrated;
     }
   } catch (err) {
     console.error('[crm-store] Load error, using defaults:', err.message);
@@ -137,9 +165,22 @@ export function getTicketById(id) {
   return store.tickets.find(t => t.id === id) || null;
 }
 
-export function createTicket(data) {
+export function createTicket(data = {}) {
+  const normalizeIso = (value) => {
+    if (!value) return null;
+    const d = new Date(value);
+    if (Number.isNaN(d.getTime())) return null;
+    return d.toISOString();
+  };
+
+  const nowIso = new Date().toISOString();
+  const createdAt = normalizeIso(data.createdAt) || nowIso;
+  const updatedAt = normalizeIso(data.updatedAt) || createdAt;
+
+  const id = `TK-${randomUUID().split('-')[0].toUpperCase()}`;
+
   const ticket = {
-    id: `TK-${Date.now().toString(36).toUpperCase()}`,
+    id,
     customerId: data.customerId || null,
     customerName: data.customerName || 'Unknown',
     customerEmail: data.customerEmail || '',
@@ -154,8 +195,8 @@ export function createTicket(data) {
     seedKey: data.seedKey || null,
     channel: data.channel || 'shopify',   // shopify | email | social_fb | social_ig | social_tiktok | manual
     notes: [],
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
+    createdAt,
+    updatedAt,
     resolvedAt: null,
     firstResponseAt: null,
   };
