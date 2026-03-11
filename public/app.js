@@ -1550,8 +1550,12 @@ async function loadTickets() {
       const list = document.getElementById('ticketList');
       if (!list) return;
       if (!tickets.length) { list.innerHTML = '<div class="empty-state" style="padding:40px"><h3>No tickets found</h3><p>Create a new ticket or adjust filters.</p></div>'; return; }
-      list.innerHTML = tickets.map(t => `
-        <div class="ticket-card" onclick="navigateTo('ticket-detail', '${t.id}')">
+
+      const shopifyTickets = tickets.filter(t => (t.channel || 'shopify') !== 'email');
+      const emailTickets = tickets.filter(t => (t.channel || 'shopify') === 'email');
+
+      function renderCard(t) {
+        return `<div class="ticket-card" onclick="navigateTo('ticket-detail', '${t.id}')">
           <div class="ticket-card-top">
             <span class="ticket-id">${t.id}</span>
             ${channelBadge(t.channel || 'shopify')}
@@ -1566,8 +1570,19 @@ async function loadTickets() {
             ${t.customerEmail ? `<span style="color:var(--text-muted)">${escHtml(t.customerEmail)}</span>` : ''}
             <span style="margin-left:auto">${t.notes.length} note${t.notes.length !== 1 ? 's' : ''}</span>
           </div>
-        </div>
-      `).join('');
+        </div>`;
+      }
+
+      let html = '';
+      if (shopifyTickets.length) {
+        html += `<div class="ticket-group-header shopify-group"><span>🛍 Shopify Orders</span><span class="ticket-group-count">${shopifyTickets.length}</span></div>`;
+        html += shopifyTickets.map(renderCard).join('');
+      }
+      if (emailTickets.length) {
+        html += `<div class="ticket-group-header email-group"><span>📧 Email Tickets</span><span class="ticket-group-count">${emailTickets.length}</span></div>`;
+        html += emailTickets.map(renderCard).join('');
+      }
+      list.innerHTML = html;
     }
 
     const sc = { open: 0, in_progress: 0, waiting: 0, resolved: 0, closed: 0 };

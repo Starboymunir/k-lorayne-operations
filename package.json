@@ -14,5 +14,8 @@
     "dotenv": "^16.4.7",
     "express": "^5.2.1",
     "nodemailer": "^8.0.1"
+  },
+  "devDependencies": {
+    "sharp": "^0.34.5"
   }
 }
