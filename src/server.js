@@ -594,24 +594,70 @@ function autoSeedTickets(orders, customers) {
     if (k) existingSeedKeys.add(k);
   }
 
+  // Helper: build a bullet list of items from order line items
+  function itemsList(order) {
+    const items = (order.lineItems?.edges || []).map(li => {
+      const n = li.node;
+      return `  • ${n.title}${n.sku ? ` (SKU: ${n.sku})` : ''} × ${n.quantity}`;
+    });
+    return items.length ? items.join('\n') : '  (no items found)';
+  }
+
+  // Helper: format a date nicely
+  function fmtDate(d) {
+    if (!d) return 'Unknown';
+    return new Date(d).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  }
+
+  // Helper: shipping location string
+  function shipTo(order) {
+    const a = order.shippingAddress;
+    if (!a) return 'No shipping address on file';
+    return [a.city, a.province, a.country].filter(Boolean).join(', ');
+  }
+
   let seeded = 0;
   for (const order of orders) {
     const custName = order.customer?.displayName || 'Unknown';
     const custEmail = order.customer?.email || '';
     const custId = order.customer?.id || null;
     const orderTotal = order.totalPriceSet?.shopMoney?.amount || '0';
+    const currency = order.totalPriceSet?.shopMoney?.currencyCode || 'USD';
 
     // Cancelled orders
     if (order.cancelledAt) {
       const seedKey = `${order.id}|cancelled`;
       if (existingSeedKeys.has(seedKey)) continue;
+      const reason = order.cancelReason
+        ? order.cancelReason.replace(/_/g, ' ').toLowerCase().replace(/^\w/, c => c.toUpperCase())
+        : 'Not specified by customer';
       createTicket({
         customerId: custId, customerName: custName, customerEmail: custEmail,
         category: 'returns', priority: 'medium', orderId: order.id, orderName: order.name,
         seedKey,
         createdAt: order.cancelledAt || order.createdAt,
         subject: `Cancelled Order ${order.name}`,
-        description: `Order ${order.name} was cancelled. Reason: ${order.cancelReason || 'Not specified'}. Total: $${orderTotal}\n\nCustomer may need follow-up regarding refund or exchange.`,
+        description: [
+          `═══ WHAT HAPPENED ═══`,
+          `Order ${order.name} was cancelled on ${fmtDate(order.cancelledAt)}.`,
+          `Cancellation reason: ${reason}`,
+          ``,
+          `═══ ORDER DETAILS ═══`,
+          `Customer: ${custName} (${custEmail || 'no email'})`,
+          `Order date: ${fmtDate(order.createdAt)}`,
+          `Order total: $${parseFloat(orderTotal).toFixed(2)} ${currency}`,
+          `Shipping to: ${shipTo(order)}`,
+          ``,
+          `Items in this order:`,
+          itemsList(order),
+          ``,
+          `═══ ACTION REQUIRED ═══`,
+          `1. Check if a refund has already been issued for this order`,
+          `2. If no refund yet, process the refund in Shopify admin`,
+          `3. Email the customer to confirm the cancellation and refund`,
+          `4. If reason was "customer changed mind" — consider offering a discount code for next purchase`,
+          `5. Mark this ticket as resolved once the refund is confirmed`,
+        ].join('\n'),
       });
       seeded++;
       continue;
@@ -622,13 +668,38 @@ function autoSeedTickets(orders, customers) {
     if (refunded > 0) {
       const seedKey = `${order.id}|refunded`;
       if (existingSeedKeys.has(seedKey)) continue;
+      const total = parseFloat(orderTotal);
+      const isFullRefund = refunded >= total;
       createTicket({
         customerId: custId, customerName: custName, customerEmail: custEmail,
         category: 'returns', priority: 'medium', orderId: order.id, orderName: order.name,
         seedKey,
         createdAt: order.createdAt,
         subject: `Refund on Order ${order.name} — $${refunded.toFixed(2)}`,
-        description: `A refund of $${refunded.toFixed(2)} was processed on order ${order.name} (total: $${orderTotal}).\n\nCheck if customer satisfaction follow-up is needed.`,
+        description: [
+          `═══ WHAT HAPPENED ═══`,
+          `A ${isFullRefund ? 'full' : 'partial'} refund of $${refunded.toFixed(2)} was processed on order ${order.name}.`,
+          isFullRefund ? '' : `Original total: $${total.toFixed(2)} — remaining: $${(total - refunded).toFixed(2)}`,
+          ``,
+          `═══ ORDER DETAILS ═══`,
+          `Customer: ${custName} (${custEmail || 'no email'})`,
+          `Order date: ${fmtDate(order.createdAt)}`,
+          `Order total: $${total.toFixed(2)} ${currency}`,
+          `Amount refunded: $${refunded.toFixed(2)}`,
+          `Shipping to: ${shipTo(order)}`,
+          ``,
+          `Items in this order:`,
+          itemsList(order),
+          ``,
+          `═══ ACTION REQUIRED ═══`,
+          `1. Check if the customer has been notified about the refund`,
+          `2. If this was a return, verify the item(s) have been received back`,
+          `3. Send a follow-up email asking if there's anything else you can help with`,
+          isFullRefund
+            ? `4. Consider asking for feedback on why they returned — helps improve product/service`
+            : `4. Confirm the partial refund amount is correct and the customer is satisfied`,
+          `5. Mark this ticket as resolved once confirmed`,
+        ].filter(Boolean).join('\n'),
       });
       seeded++;
       continue;
@@ -641,14 +712,44 @@ function autoSeedTickets(orders, customers) {
       if (daysSinceOrder > 7) {
         const seedKey = `${order.id}|unfulfilled`;
         if (existingSeedKeys.has(seedKey)) continue;
+        const daysRounded = Math.round(daysSinceOrder);
+        const urgency = daysRounded > 14
+          ? '🔴 CRITICAL — This order is severely overdue. The customer may file a chargeback or leave a negative review.'
+          : '🟡 URGENT — This order should have shipped by now. Please prioritize fulfillment.';
         createTicket({
           customerId: custId, customerName: custName, customerEmail: custEmail,
           category: 'shipping', priority: daysSinceOrder > 14 ? 'high' : 'medium',
           orderId: order.id, orderName: order.name,
           seedKey,
           createdAt: order.createdAt,
-          subject: `Unfulfilled Order ${order.name} — ${Math.round(daysSinceOrder)} days`,
-          description: `Order ${order.name} has been paid but unfulfilled for ${Math.round(daysSinceOrder)} days.\nTotal: $${orderTotal}\n\nCustomer: ${custName} (${custEmail})`,
+          subject: `Unfulfilled Order ${order.name} — ${daysRounded} days`,
+          description: [
+            `═══ WHAT HAPPENED ═══`,
+            `Order ${order.name} was placed ${daysRounded} days ago (${fmtDate(order.createdAt)}) and has been PAID but NOT YET FULFILLED.`,
+            ``,
+            urgency,
+            ``,
+            `═══ ORDER DETAILS ═══`,
+            `Customer: ${custName} (${custEmail || 'no email'})`,
+            `Order date: ${fmtDate(order.createdAt)}`,
+            `Order total: $${parseFloat(orderTotal).toFixed(2)} ${currency}`,
+            `Payment status: ${order.displayFinancialStatus}`,
+            `Fulfillment status: ${order.displayFulfillmentStatus}`,
+            `Shipping to: ${shipTo(order)}`,
+            ``,
+            `Items to ship:`,
+            itemsList(order),
+            ``,
+            `═══ ACTION REQUIRED ═══`,
+            `1. Check if these items are in stock and ready to ship`,
+            `2. If in stock → fulfill and ship the order in Shopify admin immediately`,
+            `3. If out of stock → contact the customer to offer alternatives, a backorder ETA, or a refund`,
+            `4. Send the customer a proactive email with tracking info or an update`,
+            daysRounded > 14
+              ? `5. ⚠️ This is ${daysRounded} days overdue — email the customer ASAP to prevent a chargeback`
+              : `5. Add a note here with the tracking number once shipped`,
+            `6. Mark this ticket as resolved once the order is fulfilled`,
+          ].join('\n'),
         });
         seeded++;
       }

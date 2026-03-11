@@ -94,6 +94,19 @@ function load() {
         settings: { ...DEFAULT_STORE.settings, ...parsed.settings },
       };
       const changed = repairDuplicateTicketIds(hydrated);
+
+      // One-time migration: purge old auto-seeded tickets so they re-create with enriched descriptions
+      const SEED_MIGRATION_KEY = '_seedDescV2';
+      if (!hydrated[SEED_MIGRATION_KEY]) {
+        const before = hydrated.tickets.length;
+        hydrated.tickets = hydrated.tickets.filter(t => !t.seedKey);
+        hydrated[SEED_MIGRATION_KEY] = true;
+        const removed = before - hydrated.tickets.length;
+        if (removed > 0) console.log(`[crm-store] Migration: purged ${removed} old seeded tickets (will re-create with rich descriptions)`);
+        save(hydrated);
+        return hydrated;
+      }
+
       if (changed) save(hydrated);
       console.log(`[crm-store] Loaded ${hydrated.tickets.length} tickets from ${STORE_FILE}`);
       return hydrated;
