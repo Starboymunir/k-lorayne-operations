@@ -1534,7 +1534,7 @@ async function loadTickets() {
     const cData = await cRes.json();
     _categories = cData.categories || [];
 
-    let filterStatus = 'active', filterCategory = '', searchTerm = '';
+    let filterStatus = 'active', filterCategory = '', searchTerm = '', channelTab = 'shopify';
 
     function getFiltered() {
       let tickets = tData.tickets;
@@ -1549,13 +1549,30 @@ async function loadTickets() {
       const tickets = getFiltered();
       const list = document.getElementById('ticketList');
       if (!list) return;
-      if (!tickets.length) { list.innerHTML = '<div class="empty-state" style="padding:40px"><h3>No tickets found</h3><p>Create a new ticket or adjust filters.</p></div>'; return; }
 
-      const shopifyTickets = tickets.filter(t => (t.channel || 'shopify') !== 'email');
-      const emailTickets = tickets.filter(t => (t.channel || 'shopify') === 'email');
+      // Count per channel (across filtered tickets)
+      const shopifyCount = tickets.filter(t => (t.channel || 'shopify') !== 'email').length;
+      const emailCount = tickets.filter(t => (t.channel || 'shopify') === 'email').length;
 
-      function renderCard(t) {
-        return `<div class="ticket-card" onclick="navigateTo('ticket-detail', '${t.id}')">
+      // Update tab counts
+      const scEl = document.getElementById('shopifyTabCount');
+      const ecEl = document.getElementById('emailTabCount');
+      if (scEl) scEl.textContent = shopifyCount;
+      if (ecEl) ecEl.textContent = emailCount;
+
+      // Show only the active tab's tickets
+      const visible = channelTab === 'shopify'
+        ? tickets.filter(t => (t.channel || 'shopify') !== 'email')
+        : tickets.filter(t => (t.channel || 'shopify') === 'email');
+
+      if (!visible.length) {
+        const label = channelTab === 'shopify' ? 'Shopify order' : 'email';
+        list.innerHTML = `<div class="empty-state" style="padding:40px"><h3>No ${label} tickets found</h3><p>Adjust your filters or switch tabs.</p></div>`;
+        return;
+      }
+
+      list.innerHTML = visible.map(t => `
+        <div class="ticket-card" onclick="navigateTo('ticket-detail', '${t.id}')">
           <div class="ticket-card-top">
             <span class="ticket-id">${t.id}</span>
             ${channelBadge(t.channel || 'shopify')}
@@ -1570,19 +1587,8 @@ async function loadTickets() {
             ${t.customerEmail ? `<span style="color:var(--text-muted)">${escHtml(t.customerEmail)}</span>` : ''}
             <span style="margin-left:auto">${t.notes.length} note${t.notes.length !== 1 ? 's' : ''}</span>
           </div>
-        </div>`;
-      }
-
-      let html = '';
-      if (shopifyTickets.length) {
-        html += `<div class="ticket-group-header shopify-group"><span>🛍 Shopify Orders</span><span class="ticket-group-count">${shopifyTickets.length}</span></div>`;
-        html += shopifyTickets.map(renderCard).join('');
-      }
-      if (emailTickets.length) {
-        html += `<div class="ticket-group-header email-group"><span>📧 Email Tickets</span><span class="ticket-group-count">${emailTickets.length}</span></div>`;
-        html += emailTickets.map(renderCard).join('');
-      }
-      list.innerHTML = html;
+        </div>
+      `).join('');
     }
 
     const sc = { open: 0, in_progress: 0, waiting: 0, resolved: 0, closed: 0 };
@@ -1614,10 +1620,18 @@ async function loadTickets() {
             return `<button class="cat-pill" data-catf="${c.id}" style="--cat-color:${c.color}">${c.icon} ${c.label} <span class="cat-pill-count" data-catcount="${c.id}">${cnt}</span></button>`;
           }).join('')}
         </div>
+        <div class="channel-tabs" id="channelTabs">
+          <button class="channel-tab active" data-chtab="shopify">🛍 Shopify Orders <span class="channel-tab-count" id="shopifyTabCount">0</span></button>
+          <button class="channel-tab" data-chtab="email">📧 Email Tickets <span class="channel-tab-count" id="emailTabCount">0</span></button>
+        </div>
         <div id="ticketList" class="ticket-list"></div>
       </div>
     `;
 
+    $$('[data-chtab]').forEach(el => el.addEventListener('click', () => {
+      $$('[data-chtab]').forEach(e2 => e2.classList.remove('active'));
+      el.classList.add('active'); channelTab = el.dataset.chtab; render();
+    }));
     $('#ticketSearch').addEventListener('input', e => { searchTerm = e.target.value; render(); });
     $$('[data-tfilter]').forEach(el => el.addEventListener('click', () => {
       $$('[data-tfilter]').forEach(e2 => e2.classList.remove('active-filter'));

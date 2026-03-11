@@ -684,16 +684,26 @@ tr:hover td { background: var(--bg-card-hover); }
 
 .ticket-list { display: flex; flex-direction: column; }
 
-.ticket-group-header {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 10px 20px;
-  font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: .5px;
-  border-bottom: 2px solid var(--border);
-  position: sticky; top: 0; z-index: 2;
+/* Channel tabs (Shopify / Email) */
+.channel-tabs {
+  display: flex; gap: 0; border-bottom: 2px solid var(--border);
 }
-.ticket-group-header.shopify-group { background: rgba(150,191,72,.12); color: #96bf48; border-bottom-color: #96bf48; }
-.ticket-group-header.email-group   { background: rgba(59,130,246,.10); color: #3b82f6; border-bottom-color: #3b82f6; }
-.ticket-group-count { font-size: 12px; background: rgba(255,255,255,.1); padding: 2px 8px; border-radius: 10px; }
+.channel-tab {
+  flex: 1; padding: 10px 16px;
+  font-size: 13px; font-weight: 600;
+  background: none; border: none; cursor: pointer;
+  color: var(--text-dim);
+  border-bottom: 3px solid transparent;
+  margin-bottom: -2px;
+  transition: color .15s, border-color .15s;
+}
+.channel-tab:hover { color: var(--text-primary); }
+.channel-tab.active[data-chtab="shopify"] { color: #96bf48; border-bottom-color: #96bf48; }
+.channel-tab.active[data-chtab="email"]   { color: #3b82f6; border-bottom-color: #3b82f6; }
+.channel-tab-count {
+  display: inline-block; font-size: 11px; font-weight: 700;
+  background: rgba(255,255,255,.08); padding: 1px 7px; border-radius: 10px; margin-left: 6px;
+}
 
 .ticket-card {
   display: flex; flex-direction: column; gap: 6px;
