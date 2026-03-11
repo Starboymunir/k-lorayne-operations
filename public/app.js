@@ -1160,11 +1160,13 @@ async function loadAlerts() {
     data.alerts.forEach(a => { if (!byGroup[a.priority]) byGroup[a.priority] = []; byGroup[a.priority].push(a); });
 
     let velocityMode = 'monthly'; // 'weekly' | 'monthly'
+    let activeFilter = null; // null = show all, or 'CRITICAL' | 'URGENT' etc.
 
     function renderAlertTables() {
       const velLabel = velocityMode === 'weekly' ? 'Weekly' : 'Monthly';
       const velSuffix = velocityMode === 'weekly' ? '/wk' : '/mo';
       return groups.map(g => {
+        if (activeFilter && activeFilter !== g.key) return '';
         const items = byGroup[g.key] || [];
         if (!items.length) return '';
         const alertTips = { CRITICAL: 'These items are out of stock and have proven sales — they are losing you revenue right now.', URGENT: 'These items will run out within 14 days at current sales pace.', REORDER: 'Below safety stock — include in your next purchase order.', WATCH: 'Stock is getting low, keep an eye on these this week.' };
@@ -1198,11 +1200,19 @@ async function loadAlerts() {
         </div>
       </div>
       <div class="kpi-grid" style="grid-template-columns:repeat(5,1fr)">
-        ${groups.map((g, i) => `<div class="kpi-card"><div class="kpi-icon" style="background:${g.color}22;color:${g.color}">!</div><div class="kpi-data"><div class="kpi-value" style="color:${g.color}">${counts[i]}</div><div class="kpi-label">${g.key}</div></div></div>`).join('')}
+        ${groups.map((g, i) => `<div class="kpi-card clickable" data-alert-filter="${g.key}" style="cursor:pointer"><div class="kpi-icon" style="background:${g.color}22;color:${g.color}">!</div><div class="kpi-data"><div class="kpi-value" style="color:${g.color}">${counts[i]}</div><div class="kpi-label">${g.key}</div></div></div>`).join('')}
         <div class="kpi-card"><div class="kpi-icon" style="background:var(--red-soft);color:var(--red)">💰</div><div class="kpi-data"><div class="kpi-value" style="color:var(--red);font-size:16px">${fmtMoney(s.totalRevAtRisk || 0)}</div><div class="kpi-label">Rev at Risk ${infoTip('Monthly revenue at risk from out-of-stock products with proven sales history.')}</div></div></div>
       </div>
       <div id="alertTablesWrap">${renderAlertTables()}</div>
       ${data.total === 0 ? '<div class="empty-state"><h3>All Clear!</h3><p>No low-stock alerts right now.</p></div>' : ''}`;
+
+    // KPI card filter — click to show only that priority group
+    $$('[data-alert-filter]').forEach(card => card.addEventListener('click', () => {
+      const key = card.dataset.alertFilter;
+      activeFilter = activeFilter === key ? null : key; // toggle
+      $$('[data-alert-filter]').forEach(c => c.style.outline = c.dataset.alertFilter === activeFilter ? '2px solid var(--accent)' : 'none');
+      document.getElementById('alertTablesWrap').innerHTML = renderAlertTables();
+    }));
 
     // Weekly/Monthly velocity toggle
     $$('[data-vel]').forEach(btn => btn.addEventListener('click', () => {
