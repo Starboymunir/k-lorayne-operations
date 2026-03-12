@@ -211,15 +211,12 @@ function kloIngestAuto() {
       if (aiResult) matched = aiResult;
     }
 
-    // ─── Step 7: If still no match → check if contact form (auto-categorize) or IGNORE ───
+    // ─── Step 7: If still no match → default to general support ───
+    // If an email survived all the domain/subject/marketing filters above,
+    // it's a real person emailing contact@ — always create a ticket.
+    // Keywords are only used for categorization, NOT as a gate.
     if (!matched) {
-      if (isContactForm) {
-        // Contact forms are always real customer messages — categorize as general support
-        matched = { name: 'contact_form', category: 'general', priority: 'medium' };
-      } else {
-        thread.addLabel(ignoredLabel);
-        continue;
-      }
+      matched = { name: isContactForm ? 'contact_form' : 'general_inquiry', category: 'general', priority: 'medium' };
     }
 
     // ─── Step 8: This IS a support email — create the ticket ───
