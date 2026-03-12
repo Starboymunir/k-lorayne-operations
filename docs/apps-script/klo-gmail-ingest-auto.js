@@ -35,7 +35,7 @@ function kloIngestAuto() {
   // Search: emails to contact@, recent, NOT already processed or ignored
   var q = 'to:contact@kloapparel.com newer_than:' + lookbackDays + 'd -label:' + ingestedLabel.getName() + ' -label:' + ignoredLabel.getName();
   var threads = GmailApp.search(q, 0, 500);
-  Logger.log('Found ' + threads.length + ' threads to process (backfill=' + backfillMode + ')');
+  Logger.log('Found ' + threads.length + ' threads to process');
   var startTime = new Date().getTime();
   var ticketed = 0;
   var ignored = 0;
