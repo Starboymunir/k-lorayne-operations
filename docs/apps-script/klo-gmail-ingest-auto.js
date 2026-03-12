@@ -38,7 +38,8 @@ function kloIngestAuto() {
   if (!backfillMode) {
     q += ' -label:' + ingestedLabel.getName() + ' -label:' + ignoredLabel.getName();
   }
-  var threads = GmailApp.search(q, 0, 100);
+  var batchSize = backfillMode ? 500 : 100;
+  var threads = GmailApp.search(q, 0, batchSize);
   var startTime = new Date().getTime();
   var processed = 0;
 
@@ -53,14 +54,6 @@ function kloIngestAuto() {
     var thread = threads[i];
     var msgs = thread.getMessages();
     if (!msgs || msgs.length === 0) continue;
-
-    // In backfill mode, skip threads already processed (label check in code, not search)
-    if (backfillMode) {
-      var threadLabels = thread.getLabels().map(function(l) { return l.getName(); });
-      if (threadLabels.indexOf(ingestedLabel.getName()) >= 0 || threadLabels.indexOf(ignoredLabel.getName()) >= 0) {
-        continue;
-      }
-    }
 
     // Use the LATEST message in the thread (catches customer replies)
     var m = msgs[msgs.length - 1];
