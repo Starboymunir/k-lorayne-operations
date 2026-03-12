@@ -58,8 +58,24 @@ function kloIngestAuto() {
     var msgs = thread.getMessages();
     if (!msgs || msgs.length === 0) { skipped++; continue; }
 
-    // Get the LATEST message in the thread (catches customer replies)
-    var m = msgs[msgs.length - 1];
+    // Get the best message to classify:
+    // Start from the latest, but if it's from an internal address, walk backwards
+    // to find the latest EXTERNAL message (the actual customer email)
+    var m = null;
+    for (var mi = msgs.length - 1; mi >= 0; mi--) {
+      var candidateFrom = extractEmail_(msgs[mi].getFrom() || '').toLowerCase();
+      if (!candidateFrom.endsWith('@kloapparel.com') && !candidateFrom.endsWith('@klorayne.com')) {
+        m = msgs[mi];
+        break;
+      }
+    }
+    if (!m) {
+      // Entire thread is internal — skip
+      thread.addLabel(ignoredLabel);
+      ignored++;
+      continue;
+    }
+
     var fromRaw = m.getFrom() || '';
     var fromEmail = extractEmail_(fromRaw).toLowerCase();
     var fromName = extractName_(fromRaw);
@@ -70,13 +86,6 @@ function kloIngestAuto() {
     var externalId = m.getId();
 
     Logger.log('[' + (i + 1) + '/' + threads.length + '] "' + subject + '" from ' + fromEmail);
-
-    // ─── Quick skip: internal emails ───
-    if (fromEmail.endsWith('@kloapparel.com') || fromEmail.endsWith('@klorayne.com')) {
-      thread.addLabel(ignoredLabel);
-      ignored++;
-      continue;
-    }
 
     // ─── AI Classification — OpenAI reads the email and decides ───
     var aiResult = classifyWithOpenAI_(openaiApiKey, {
