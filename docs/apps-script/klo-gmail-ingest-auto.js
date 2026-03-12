@@ -149,16 +149,27 @@ function kloIngestAuto() {
       headers: inboundToken ? { 'x-inbound-token': inboundToken } : {},
     };
 
-    var resp = UrlFetchApp.fetch(inboundUrl, options);
-    var code = resp.getResponseCode();
-    if (code >= 200 && code < 300) {
-      thread.addLabel(ingestedLabel);
-      try { thread.removeLabel(failedLabel); } catch (e) {}
-    } else {
-      Logger.log('Failed ingest HTTP ' + code + ': ' + resp.getContentText());
+    try {
+      var resp = UrlFetchApp.fetch(inboundUrl, options);
+      var code = resp.getResponseCode();
+      if (code >= 200 && code < 300) {
+        thread.addLabel(ingestedLabel);
+        try { thread.removeLabel(failedLabel); } catch (e) {}
+      } else {
+        Logger.log('Failed ingest HTTP ' + code + ': ' + resp.getContentText());
+        thread.addLabel(failedLabel);
+      }
+      ticketed++;
+    } catch (fetchErr) {
+      if (String(fetchErr).indexOf('Bandwidth quota') >= 0) {
+        Logger.log('BANDWIDTH QUOTA HIT at thread ' + (i + 1) + '/' + threads.length + '. Run kloBackfillContinue() to resume.');
+        break;
+      }
+      Logger.log('Fetch error: ' + fetchErr.message);
       thread.addLabel(failedLabel);
     }
-    ticketed++;
+    // Throttle to avoid Apps Script bandwidth quota
+    Utilities.sleep(200);
   }
   Logger.log('Done: ' + ticketed + ' ticketed, ' + ignored + ' ignored, ' + skipped + ' skipped out of ' + threads.length + ' threads.');
 }
