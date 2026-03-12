@@ -32,14 +32,9 @@ function kloIngestAuto() {
   var ignoredLabel  = ensureLabel_('KLO/Ignored');
   var supportLabel  = ensureLabel_('KLO/ToTicket/Support');
 
-  // In backfill mode, don't use -label: exclusions (Gmail index lags after label removal)
-  var backfillMode = props.getProperty('KLO_BACKFILL_MODE') === 'true';
-  var q = 'to:contact@kloapparel.com newer_than:' + lookbackDays + 'd';
-  if (!backfillMode) {
-    q += ' -label:' + ingestedLabel.getName() + ' -label:' + ignoredLabel.getName();
-  }
-  var batchSize = backfillMode ? 500 : 100;
-  var threads = GmailApp.search(q, 0, batchSize);
+  // Search: emails to contact@, recent, NOT already processed or ignored
+  var q = 'to:contact@kloapparel.com newer_than:' + lookbackDays + 'd -label:' + ingestedLabel.getName() + ' -label:' + ignoredLabel.getName();
+  var threads = GmailApp.search(q, 0, 500);
   Logger.log('Found ' + threads.length + ' threads to process (backfill=' + backfillMode + ')');
   var startTime = new Date().getTime();
   var ticketed = 0;
@@ -86,6 +81,15 @@ function kloIngestAuto() {
     var externalId = m.getId();
 
     Logger.log('[' + (i + 1) + '/' + threads.length + '] "' + subject + '" from ' + fromEmail);
+
+    // ─── Fast pre-filter: skip obvious noise WITHOUT calling AI (saves ~2s per skip) ───
+    var quickIgnore = isObviousNoise_(fromEmail, subject);
+    if (quickIgnore) {
+      Logger.log('QUICK SKIP: "' + subject + '" — ' + quickIgnore);
+      thread.addLabel(ignoredLabel);
+      ignored++;
+      continue;
+    }
 
     // ─── AI Classification — OpenAI reads the email and decides ───
     var aiResult = classifyWithOpenAI_(openaiApiKey, {
@@ -159,6 +163,60 @@ function kloIngestAuto() {
   Logger.log('Done: ' + ticketed + ' ticketed, ' + ignored + ' ignored, ' + skipped + ' skipped out of ' + threads.length + ' threads.');
 }
 
+// ─── FAST PRE-FILTER (skip obvious noise without calling AI) ───
+
+// Known automated/marketing sender domains — no human wrote these
+var NOISE_DOMAINS = [
+  'mailer-daemon@', 'noreply@', 'no-reply@',
+  'mailer@shopify.com', 'flow@shopify.com',
+  'noreply-apps-scripts-notifications@google.com',
+  'no-reply@accounts.google.com',
+  'no-reply@canva.com', 'no-reply@account.canva.com',
+  'employers-noreply@indeed.com',
+];
+
+// Subject patterns that are always automated noise
+var NOISE_SUBJECT_PATTERNS = [
+  /^payout for /i,
+  /^\[.*\] order [A-Za-z0-9]+ placed by /i,
+  /^delivery status notification/i,
+  /^shipping label created/i,
+  /^\[shopify\] update: shopify support chat/i,
+  /^summary of failures for google apps script/i,
+  /^security alert$/i,
+  /^recovery email verified/i,
+  /^inventory forecast for /i,
+  /^weekly job summary$/i,
+  /^your canva invoice$/i,
+  /^end of week inventory count$/i,
+];
+
+// Known bulk marketing domains — never a real person
+var MARKETING_DOMAINS = [
+  '@shared1.ccsend.com', '@t.shopifyemail.com',
+  '@us.shopping.hp.com', '@my.joinhoney.com',
+  '@hello.blink.com', '@info.pinterest.com',
+  '@mail.adobe.com', '@mkt.obws.com',
+  '@gotprint.com', '@shop.tiktok.com',
+];
+
+function isObviousNoise_(fromEmail, subject) {
+  var subjectLower = subject.toLowerCase();
+  // Check known noise senders
+  for (var i = 0; i < NOISE_DOMAINS.length; i++) {
+    if (fromEmail.indexOf(NOISE_DOMAINS[i]) >= 0) return 'noise sender';
+  }
+  // Check marketing domains
+  for (var i = 0; i < MARKETING_DOMAINS.length; i++) {
+    if (fromEmail.indexOf(MARKETING_DOMAINS[i]) >= 0) return 'marketing sender';
+  }
+  // Check subject patterns
+  for (var i = 0; i < NOISE_SUBJECT_PATTERNS.length; i++) {
+    if (NOISE_SUBJECT_PATTERNS[i].test(subject)) return 'noise subject';
+  }
+  return null; // Not obvious noise — send to AI
+}
+
 // ─── KEYWORD FALLBACK (only used if OpenAI is down) ───
 
 var SUPPORT_RULES = [
@@ -194,47 +252,41 @@ function classifyWithOpenAI_(apiKey, email) {
       'You are the email triage system for K.Lorayne, a clothing brand.',
       'The email inbox is contact@kloapparel.com.',
       '',
-      'Your job: read this email and decide if it needs a support ticket or not.',
-      'DEFAULT TO CREATING A TICKET. When in doubt, CREATE a ticket. Only ignore things that are clearly automated noise with no customer involved.',
+      'Your job: decide if this email needs a support ticket.',
+      'YOUR DEFAULT IS TO CREATE A TICKET. Only ignore clearly automated/promotional noise.',
       '',
       'ALWAYS CREATE A TICKET for:',
-      '- ANY message from a real customer (order questions, complaints, inquiries, anything)',
-      '- Shopify Inbox customer chat messages (subject like "New customer message" or "New message from...")',
-      '- A customer asking about their order (status, shipping, delivery)',
-      '- A customer wanting a refund, cancellation, or chargeback dispute',
-      '- A customer reporting a damaged, defective, or wrong item',
-      '- A customer wanting to return or exchange something',
-      '- A customer asking about sizing or fit',
-      '- A customer wanting to change their shipping address',
-      '- Contact form submissions from the website',
-      '- ANY message that a human might need to read and respond to',
-      '- Shopify chargeback/dispute notifications',
-      '- Shopify refund requests',
-      '- Anything where a customer is trying to reach the store',
+      '- ANY email from a real human being (customer, business contact, collaborator, partner, developer, freelancer)',
+      '- Business proposals, partnership inquiries, collaboration requests',
+      '- Shopify Inbox customer chats ("New customer message", "New message from...")',
+      '- Order inquiries, refunds, cancellations, chargebacks',
+      '- Damaged/defective/wrong item reports',
+      '- Return or exchange requests',
+      '- Sizing or fit questions',
+      '- Address change requests',
+      '- Contact form submissions',
+      '- Shopify chargeback/dispute/refund notifications',
+      '- Return requested notifications',
+      '- Inquiry opened notifications',
+      '- Restock notification sign-ups',
+      '- ANY email where a real person typed something and sent it',
       '',
-      'ONLY ignore these (clearly automated noise with NO customer action needed):',
-      '- Order confirmation emails ("You have a new order #1234", "Order confirmed")',
-      '- Shipping label created notifications',
-      '- Payout/deposit notifications',
-      '- Marketing emails, newsletters, promos from OTHER brands',
-      '- Social media notifications (Facebook, Instagram, TikTok)',
-      '- Payment processor receipts (Stripe, PayPal)',
-      '- Carrier tracking updates (USPS, FedEx, UPS) that are just status updates',
-      '- Review request emails (Judge.me, Yotpo asking customer to leave review)',
-      '- Password reset / verify email / security alerts',
-      '- Spam',
-      '- Shopify billing, invoices, subscription emails (store owner admin)',
-      '- App install/remove notifications',
+      'ONLY IGNORE (automated/promotional noise — no human wrote this):',
+      '- Mass marketing emails, newsletters, promos, sale alerts from brands/services',
+      '- Automated platform notifications (password reset, security alert, account verification)',
+      '- Shopify billing/invoices/subscription emails',
+      '- Inventory forecast automated emails',
+      '- Job platform automated summaries (Indeed, LinkedIn)',
+      '- Canva/Google/social media automated notifications',
+      '- Delivery Status Notification (Failure) bouncebacks',
+      '- Shopify Support Chat updates (from Shopify support TO the store owner)',
       '',
-      'IMPORTANT RULES:',
-      '- "New customer message" from Shopify = ALWAYS a ticket (customer is chatting)',
-      '- "Contact form submission" = ALWAYS a ticket',
-      '- If a real person wrote something, it\'s a ticket',
-      '- Shopify Support Chat updates (from Shopify support TO the store owner) = NOT a ticket',
-      '- When in doubt, CREATE THE TICKET',
+      'KEY RULE: If a human being sat down and typed/sent this email, CREATE A TICKET.',
+      'That includes: business proposals, freelancer pitches, collaboration requests, customer inquiries, complaints, anything personal.',
+      'When in doubt, CREATE THE TICKET.',
       '',
       'Return ONLY valid JSON:',
-      'If ticket: {"ticket":true,"type":"refund|shipping|delay|address|defective|sizing|return|chat|general","priority":"low|medium|high","reason":"brief explanation"}',
+      'If ticket: {"ticket":true,"type":"refund|shipping|delay|address|defective|sizing|return|chat|inquiry|general","priority":"low|medium|high","reason":"brief explanation"}',
       'If NOT ticket: {"ticket":false,"reason":"brief explanation"}',
     ].join('\n');
 
@@ -293,7 +345,7 @@ function classifyWithOpenAI_(apiKey, email) {
     var typeMap = {
       refund: 'returns', shipping: 'shipping', delay: 'order_status',
       address: 'shipping', defective: 'damage', sizing: 'sizing',
-      'return': 'returns', chat: 'general', general: 'general',
+      'return': 'returns', chat: 'general', inquiry: 'general', general: 'general',
     };
     var category = typeMap[out.type] || 'general';
     var priority = out.priority || 'medium';
@@ -332,14 +384,14 @@ function myFunction() {
 }
 
 /**
- * BACKFILL — Run this ONCE to reset ALL labels and re-ingest everything.
+ * BACKFILL — Run this ONCE to strip all labels, then use kloBackfillContinue().
  *
  * What it does:
- *   1. Strips KLO/Ignored, KLO/Ingested, KLO/Processed, KLO/ToTicket/Support
- *      from ALL emails in the last 60 days
- *   2. Automatically runs ingestion (60-day window) so tickets appear in the app
+ *   1. Strips ALL KLO labels from emails in the last 60 days
+ *   2. Runs one batch of ingestion (60-day window)
  *
- * Just run kloBackfill — that's it. No need to run kloIngestAuto after.
+ * After this, run kloBackfillContinue() for subsequent batches.
+ * kloBackfillContinue() does NOT strip labels — it picks up where the last run left off.
  */
 function kloBackfill() {
   var backfillDays = 60;
@@ -363,7 +415,6 @@ function kloBackfill() {
       continue;
     }
 
-    // GmailApp.search uses the label name as-is (with slashes)
     var q = 'to:contact@kloapparel.com newer_than:' + backfillDays + 'd label:' + lbl.getName();
     Logger.log('Stripping ' + lbl.getName() + ' — query: ' + q);
     var threads = GmailApp.search(q, 0, 500);
@@ -376,22 +427,32 @@ function kloBackfill() {
   }
 
   Logger.log('Backfill: stripped labels from ' + resetCount + ' threads total.');
-  Logger.log('Now running ingestion with 60-day lookback...');
+  Logger.log('Now running first batch of ingestion...');
 
-  // Temporarily override lookback to 60 days and run ingestion
+  // Run first batch
+  kloBackfillContinue_();
+}
+
+/**
+ * BACKFILL CONTINUE — Run this to continue processing after kloBackfill().
+ *
+ * Does NOT strip labels. Picks up unprocessed threads and continues.
+ * Run repeatedly until log shows all threads processed.
+ */
+function kloBackfillContinue() {
+  kloBackfillContinue_();
+}
+
+function kloBackfillContinue_() {
   var props = PropertiesService.getScriptProperties();
   var originalLookback = props.getProperty('KLO_LOOKBACK_DAYS') || '14';
   props.setProperty('KLO_LOOKBACK_DAYS', '60');
-  props.setProperty('KLO_BACKFILL_MODE', 'true');
 
   try {
-    // Process in batches to stay within Apps Script 6-minute limit
     kloIngestAuto();
-    Logger.log('Backfill ingestion complete!');
+    Logger.log('Backfill batch complete!');
   } finally {
-    // Restore original settings
     props.setProperty('KLO_LOOKBACK_DAYS', originalLookback);
-    props.deleteProperty('KLO_BACKFILL_MODE');
     Logger.log('Restored KLO_LOOKBACK_DAYS to ' + originalLookback);
   }
 }
