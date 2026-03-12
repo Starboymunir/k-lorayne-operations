@@ -12,10 +12,13 @@
  * - KLO_INBOUND_URL = https://k-lorayne-operations.onrender.com/api/inbound/tickets
  * - KLO_INBOUND_TOKEN = <Render INBOUND_TOKEN>
  * - KLO_DEFAULT_ASSIGNEE = Krystle (or Showroom Manager)
- * - KLO_LOOKBACK_DAYS = 7
+ * - KLO_LOOKBACK_DAYS = 14
  *
  * Optional AI triage (improves accuracy):
  * - KLO_GEMINI_API_KEY = <Google AI Studio API key>
+ *
+ * BACKFILL: Run kloBackfill() once to reset previously-ignored emails
+ *          so they get re-evaluated with the latest rules.
  */
 
 function kloIngestAuto() {
@@ -23,7 +26,7 @@ function kloIngestAuto() {
   var inboundUrl = props.getProperty('KLO_INBOUND_URL');
   var inboundToken = props.getProperty('KLO_INBOUND_TOKEN');
   var defaultAssignee = props.getProperty('KLO_DEFAULT_ASSIGNEE') || 'Krystle';
-  var lookbackDays = parseInt(props.getProperty('KLO_LOOKBACK_DAYS') || '7', 10);
+  var lookbackDays = parseInt(props.getProperty('KLO_LOOKBACK_DAYS') || '14', 10);
   var geminiApiKey = props.getProperty('KLO_GEMINI_API_KEY') || '';
 
   if (!inboundUrl) throw new Error('Missing script property KLO_INBOUND_URL');
@@ -90,7 +93,7 @@ function kloIngestAuto() {
     },
     {
       name: 'shipping',
-      keywords: ['shipping', 'ship my order', 'not shipped', 'hasn\'t shipped', 'hasnt shipped', 'where is my order', 'where\'s my order', 'wheres my order', 'tracking', 'track my order', 'lost package', 'lost in transit', 'never received', 'didn\'t receive', 'didnt receive', 'not delivered', 'missing package', 'missing order'],
+      keywords: ['shipping', 'ship my order', 'not shipped', 'hasn\'t shipped', 'hasnt shipped', 'where is my order', 'where\'s my order', 'wheres my order', 'tracking', 'track my order', 'lost package', 'lost in transit', 'never received', 'didn\'t receive', 'didnt receive', 'not delivered', 'missing package', 'missing order', 'haven\'t received', 'havent received', 'still haven\'t got', 'still havent got', 'package lost', 'order lost', 'not arrived', 'hasn\'t arrived', 'hasnt arrived', 'never arrived', 'where is it', 'where\'s my package', 'not here yet'],
       category: 'shipping',
       priority: 'medium',
     },
@@ -102,7 +105,7 @@ function kloIngestAuto() {
     },
     {
       name: 'address',
-      keywords: ['change address', 'change my address', 'wrong address', 'update address', 'update my address', 'change shipping', 'change delivery', 'new address', 'moved', 'ship to different', 'redirect'],
+      keywords: ['change address', 'change my address', 'wrong address', 'update address', 'update my address', 'change shipping', 'change delivery', 'new address', 'moved', 'ship to different', 'redirect', 'update my delivery', 'change my delivery', 'correct address', 'fix address', 'fix my address', 'delivery address', 'delivery info', 'shipping info', 'update shipping'],
       category: 'shipping',
       priority: 'high',
     },
@@ -122,6 +125,12 @@ function kloIngestAuto() {
       name: 'return',
       keywords: ['return', 'returning', 'send back', 'send it back', 'return label', 'return policy', 'exchange', 'swap', 'replace', 'replacement'],
       category: 'returns',
+      priority: 'medium',
+    },
+    {
+      name: 'general_support',
+      keywords: ['help with my order', 'need help', 'help me', 'customer service', 'support', 'question about my order', 'issue with my order', 'problem with my order', 'order issue', 'order problem', 'complaint', 'not happy', 'unhappy', 'disappointed', 'frustrated', 'urgent', 'asap', 'please help', 'can you help', 'reach out', 'reaching out', 'follow up', 'following up', 'i ordered', 'my order', 'order number', 'order #'],
+      category: 'general',
       priority: 'medium',
     },
   ];
@@ -371,4 +380,37 @@ function containsAny_(haystackLower, needlesLower) {
 
 function myFunction() {
   kloIngestAuto();
+}
+
+/**
+ * BACKFILL — Run this ONCE to reset previously-ignored emails.
+ * It removes the KLO/Ignored label from recent emails so that the next
+ * kloIngestAuto() run will re-evaluate them with the updated rules.
+ *
+ * Steps:
+ *   1. Open Apps Script → Run → kloBackfill
+ *   2. Wait for it to finish (check Execution log)
+ *   3. Then run kloIngestAuto (or wait for the trigger)
+ */
+function kloBackfill() {
+  var props = PropertiesService.getScriptProperties();
+  var backfillDays = parseInt(props.getProperty('KLO_LOOKBACK_DAYS') || '14', 10);
+
+  var ignoredLabel = GmailApp.getUserLabelByName('KLO/Ignored');
+  if (!ignoredLabel) { Logger.log('No KLO/Ignored label found — nothing to reset.'); return; }
+
+  // Also clear old KLO/Processed label if present (from v1 script)
+  var processedLabel = GmailApp.getUserLabelByName('KLO/Processed');
+
+  var q = 'to:contact@kloapparel.com newer_than:' + backfillDays + 'd label:' + ignoredLabel.getName();
+  var threads = GmailApp.search(q, 0, 200);
+  var resetCount = 0;
+
+  for (var i = 0; i < threads.length; i++) {
+    threads[i].removeLabel(ignoredLabel);
+    if (processedLabel) { try { threads[i].removeLabel(processedLabel); } catch(e) {} }
+    resetCount++;
+  }
+
+  Logger.log('Backfill complete: reset ' + resetCount + ' threads. Run kloIngestAuto() next to re-process them.');
 }
