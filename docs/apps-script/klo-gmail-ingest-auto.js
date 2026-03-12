@@ -219,11 +219,12 @@ var ALWAYS_TICKET_PATTERNS = [
 ];
 
 function isObviousNoise_(fromEmail, subject) {
+  // Strip Re:/Fwd: prefixes so "Re: Payout for..." still matches "^Payout for..."
+  var cleanSubject = subject.replace(/^(re:\s*|fwd?:\s*)+/i, '');
   // Exemptions first — these must NEVER be skipped, even from noreply senders
   for (var i = 0; i < ALWAYS_TICKET_PATTERNS.length; i++) {
-    if (ALWAYS_TICKET_PATTERNS[i].test(subject)) return null;
+    if (ALWAYS_TICKET_PATTERNS[i].test(cleanSubject)) return null;
   }
-  var subjectLower = subject.toLowerCase();
   // Check known noise senders
   for (var i = 0; i < NOISE_DOMAINS.length; i++) {
     if (fromEmail.indexOf(NOISE_DOMAINS[i]) >= 0) return 'noise sender';
@@ -234,7 +235,7 @@ function isObviousNoise_(fromEmail, subject) {
   }
   // Check subject patterns
   for (var i = 0; i < NOISE_SUBJECT_PATTERNS.length; i++) {
-    if (NOISE_SUBJECT_PATTERNS[i].test(subject)) return 'noise subject';
+    if (NOISE_SUBJECT_PATTERNS[i].test(cleanSubject)) return 'noise subject';
   }
   return null; // Not obvious noise — send to AI
 }

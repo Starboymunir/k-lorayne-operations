@@ -2034,6 +2034,20 @@ app.delete('/api/tickets/:id', (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// Bulk-delete all tickets for a given channel (e.g. email)
+app.delete('/api/tickets/bulk/:channel', (req, res) => {
+  try {
+    const channel = req.params.channel;
+    const tickets = getTickets({ channel });
+    let count = 0;
+    for (const t of tickets) {
+      if (deleteTicket(t.id)) count++;
+    }
+    logActivity('System', 'bulk_delete', `Bulk-deleted ${count} ${channel} tickets`);
+    res.json({ success: true, deleted: count });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 app.post('/api/tickets/:id/notes', async (req, res) => {
   try {
     const note = addTicketNote(req.params.id, req.body);
