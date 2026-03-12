@@ -388,8 +388,12 @@ function getBodySnippet_(body, maxChars) {
   return s.length > maxChars ? s.slice(0, maxChars) : s;
 }
 
+var _labelCache = {};
 function ensureLabel_(name) {
-  return GmailApp.getUserLabelByName(name) || GmailApp.createLabel(name);
+  if (_labelCache[name]) return _labelCache[name];
+  var lbl = GmailApp.getUserLabelByName(name) || GmailApp.createLabel(name);
+  _labelCache[name] = lbl;
+  return lbl;
 }
 
 function extractEmail_(from) {
