@@ -35,8 +35,17 @@ function kloIngestAuto() {
   // Search: emails to contact@, recent, NOT already processed or ignored
   var q = 'to:contact@kloapparel.com newer_than:' + lookbackDays + 'd -label:' + ingestedLabel.getName() + ' -label:' + ignoredLabel.getName();
   var threads = GmailApp.search(q, 0, 100);
+  var startTime = new Date().getTime();
+  var processed = 0;
 
   for (var i = 0; i < threads.length; i++) {
+    // Guard against Apps Script 6-minute time limit — stop at 5 min to be safe
+    var elapsed = (new Date().getTime() - startTime) / 1000;
+    if (elapsed > 300) {
+      Logger.log('TIME LIMIT: Processed ' + processed + '/' + threads.length + ' threads in 5 min. Run again to continue.');
+      break;
+    }
+
     var thread = threads[i];
     var msgs = thread.getMessages();
     if (!msgs || msgs.length === 0) continue;
@@ -73,17 +82,20 @@ function kloIngestAuto() {
       continue;
     }
 
-    // AI says it IS a ticket, or AI failed (fallback to keyword classification)
     var matched = null;
     if (aiResult && aiResult.ticket) {
+      // AI says it IS a ticket
       matched = { name: aiResult.name, category: aiResult.category, priority: aiResult.priority };
       Logger.log('AI TICKET: "' + subject + '" → ' + matched.category + ' (' + matched.priority + ')');
     } else {
-      // AI failed — fall back to keyword classification
+      // AI failed after retries — fall back to keyword classification
       Logger.log('AI unavailable for "' + subject + '" — using keyword fallback');
       matched = classifyByKeywords_(subject.toLowerCase() + ' ' + bodySnippet.toLowerCase(), SUPPORT_RULES);
       if (!matched) {
-        matched = { name: 'general_inquiry', category: 'general', priority: 'medium' };
+        // No keyword match either — safer to IGNORE than create noise
+        Logger.log('FALLBACK IGNORED: "' + subject + '" — no keyword match, skipping');
+        thread.addLabel(ignoredLabel);
+        continue;
       }
     }
 
@@ -120,7 +132,9 @@ function kloIngestAuto() {
       Logger.log('Failed ingest HTTP ' + code + ': ' + resp.getContentText());
       thread.addLabel(failedLabel);
     }
+    processed++;
   }
+  Logger.log('Ingestion done: processed ' + processed + ' threads.');
 }
 
 // ─── KEYWORD FALLBACK (only used if Gemini is down) ───
@@ -205,15 +219,29 @@ function classifyWithGemini_(apiKey, email) {
       generationConfig: { temperature: 0, responseMimeType: 'application/json' },
     };
 
-    var resp = UrlFetchApp.fetch(url, {
-      method: 'post', contentType: 'application/json',
-      payload: JSON.stringify(req), muteHttpExceptions: true,
-    });
+    // Retry with exponential backoff for rate limits (429)
+    var resp = null;
+    var maxRetries = 4;
+    for (var attempt = 0; attempt <= maxRetries; attempt++) {
+      if (attempt > 0) {
+        var waitMs = Math.pow(2, attempt) * 1000; // 2s, 4s, 8s, 16s
+        Logger.log('Rate limited — waiting ' + (waitMs / 1000) + 's (attempt ' + (attempt + 1) + '/' + (maxRetries + 1) + ')');
+        Utilities.sleep(waitMs);
+      }
+      resp = UrlFetchApp.fetch(url, {
+        method: 'post', contentType: 'application/json',
+        payload: JSON.stringify(req), muteHttpExceptions: true,
+      });
+      if (resp.getResponseCode() !== 429) break;
+    }
 
     if (resp.getResponseCode() < 200 || resp.getResponseCode() >= 300) {
       Logger.log('Gemini API error: HTTP ' + resp.getResponseCode());
       return null;
     }
+
+    // Pace requests to stay under rate limits (free tier: ~15/min)
+    Utilities.sleep(2000);
 
     var raw = JSON.parse(resp.getContentText() || '{}');
     var text = raw && raw.candidates && raw.candidates[0] && raw.candidates[0].content
@@ -323,6 +351,8 @@ function kloBackfill() {
   props.setProperty('KLO_LOOKBACK_DAYS', '60');
 
   try {
+    // Process in batches to stay within Apps Script 6-minute limit
+    // Each Gemini call takes ~2-4 seconds, so ~100 emails per run max
     kloIngestAuto();
     Logger.log('Backfill ingestion complete!');
   } finally {
