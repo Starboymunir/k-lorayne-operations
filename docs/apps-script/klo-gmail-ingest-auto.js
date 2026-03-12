@@ -78,14 +78,14 @@ function kloIngestAuto() {
     'unsubscribe', 'subscription confirmed', 'welcome to',
     'verify your email', 'confirm your email', 'password reset',
     'security alert', 'sign-in', 'login attempt',
-    'invoice', 'receipt', 'statement', 'billing statement',
-    'your shipment', 'tracking number', 'out for delivery', 'delivered',
+    'invoice', 'your receipt', 'billing statement',
+    'your shipment is on the way', 'tracking number', 'out for delivery', 'has been delivered',
     // Shopify-specific automated notifications (noise)
-    '[shopify]', 'shopify support chat', 'your trial', 'your shopify',
+    'shopify support chat', 'your trial', 'your shopify store',
     'staff account', 'collaborator request', 'app installed', 'app removed',
     'theme update', 'domain verified', 'dns settings',
-    'payout for', 'label purchased', 'shipping label',
-    'abandoned checkout', 'draft order',
+    'payout for', 'label purchased', 'shipping label created',
+    'abandoned checkout', 'draft order created',
   ];
 
   // ─── SUPPORT KEYWORDS — only emails matching these become tickets ───
@@ -163,7 +163,12 @@ function kloIngestAuto() {
     var textToScan = (subjectLower + ' ' + bodySnippet.toLowerCase());
     var externalId = m.getId();
 
-    // ─── Step 0: Contact form submissions from Shopify — ALWAYS process ───
+    // ─── Step 1: CHECK SUPPORT KEYWORDS FIRST ───
+    // If the email matches ANY support keyword, it's a ticket — skip all ignore filters.
+    // This prevents real support emails from being killed by overly broad ignore rules.
+    var matched = classifyByKeywords_(textToScan, SUPPORT_RULES);
+
+    // ─── Step 2: Contact form detection ───
     var isContactForm = (subjectLower.indexOf('contact form') >= 0 ||
                          subjectLower.indexOf('contact us') >= 0 ||
                          subjectLower.indexOf('form submission') >= 0 ||
@@ -171,56 +176,53 @@ function kloIngestAuto() {
                          bodySnippet.toLowerCase().indexOf('submitted from your online store') >= 0 ||
                          bodySnippet.toLowerCase().indexOf('message from your online store') >= 0);
 
-    // ─── Step 1: Ignore known non-customer domains (but NOT contact forms) ───
-    if (!isContactForm && domainMatches_(fromEmail, IGNORE_DOMAINS)) {
-      thread.addLabel(ignoredLabel);
-      continue;
+    // If keyword matched or contact form → skip all ignore filters, go straight to ticket
+    if (!matched && !isContactForm) {
+
+      // ─── Step 3: Ignore emails from own domain (internal) ───
+      if (fromEmail.endsWith('@kloapparel.com') || fromEmail.endsWith('@klorayne.com')) {
+        thread.addLabel(ignoredLabel);
+        continue;
+      }
+
+      // ─── Step 4: Ignore known non-customer domains ───
+      if (domainMatches_(fromEmail, IGNORE_DOMAINS)) {
+        thread.addLabel(ignoredLabel);
+        continue;
+      }
+
+      // ─── Step 5: Ignore known automated/promo subject lines ───
+      if (containsAny_(subjectLower, IGNORE_SUBJECTS)) {
+        thread.addLabel(ignoredLabel);
+        continue;
+      }
+
+      // ─── Step 6: Ignore likely marketing (2+ signals in body) ───
+      var marketingSignals = ['unsubscribe', 'view in browser', 'view this email in', 'email preferences',
+        'manage preferences', 'opt out', 'no longer wish to receive', 'update your preferences',
+        'powered by klaviyo', 'powered by mailchimp', 'sent via', 'view online'];
+      var marketingHits = 0;
+      for (var ms = 0; ms < marketingSignals.length; ms++) {
+        if (textToScan.indexOf(marketingSignals[ms]) >= 0) marketingHits++;
+      }
+      if (marketingHits >= 2) {
+        thread.addLabel(ignoredLabel);
+        continue;
+      }
+
+      // ─── Step 7: Optional AI triage ───
+      if (geminiApiKey) {
+        var aiResult = classifyWithGemini_(geminiApiKey, {
+          fromEmail: fromEmail,
+          fromName: fromName,
+          subject: subject,
+          bodySnippet: bodySnippet,
+        });
+        if (aiResult) matched = aiResult;
+      }
     }
 
-    // ─── Step 2: Ignore known automated/promo subject lines (but NOT contact forms) ───
-    if (!isContactForm && containsAny_(subjectLower, IGNORE_SUBJECTS)) {
-      thread.addLabel(ignoredLabel);
-      continue;
-    }
-
-    // ─── Step 3: Ignore emails from own domain (internal) ───
-    if (fromEmail.endsWith('@kloapparel.com') || fromEmail.endsWith('@klorayne.com')) {
-      thread.addLabel(ignoredLabel);
-      continue;
-    }
-
-    // ─── Step 4: Ignore likely marketing (common signals in body) ───
-    var marketingSignals = ['unsubscribe', 'view in browser', 'view this email in', 'email preferences',
-      'manage preferences', 'opt out', 'no longer wish to receive', 'update your preferences',
-      'powered by klaviyo', 'powered by mailchimp', 'sent via', 'view online'];
-    var marketingHits = 0;
-    for (var ms = 0; ms < marketingSignals.length; ms++) {
-      if (textToScan.indexOf(marketingSignals[ms]) >= 0) marketingHits++;
-    }
-    // If 2+ marketing signals AND no support keywords → ignore
-    if (marketingHits >= 2 && !matchesSupportKeywords_(textToScan, SUPPORT_RULES)) {
-      thread.addLabel(ignoredLabel);
-      continue;
-    }
-
-    // ─── Step 5: Check if email matches a support category ───
-    var matched = classifyByKeywords_(textToScan, SUPPORT_RULES);
-
-    // ─── Step 6: Optional AI triage if no keyword match ───
-    if (!matched && geminiApiKey) {
-      var aiResult = classifyWithGemini_(geminiApiKey, {
-        fromEmail: fromEmail,
-        fromName: fromName,
-        subject: subject,
-        bodySnippet: bodySnippet,
-      });
-      if (aiResult) matched = aiResult;
-    }
-
-    // ─── Step 7: If still no match → default to general support ───
-    // If an email survived all the domain/subject/marketing filters above,
-    // it's a real person emailing contact@ — always create a ticket.
-    // Keywords are only used for categorization, NOT as a gate.
+    // ─── Step 8: Default — anything that survived filters becomes a ticket ───
     if (!matched) {
       matched = { name: isContactForm ? 'contact_form' : 'general_inquiry', category: 'general', priority: 'medium' };
     }
