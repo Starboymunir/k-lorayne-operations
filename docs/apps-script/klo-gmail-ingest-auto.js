@@ -443,9 +443,12 @@ function kloBackfill() {
     var threads = GmailApp.search(q, 0, 500);
     Logger.log('Found ' + threads.length + ' threads with ' + lbl.getName());
 
-    for (var i = 0; i < threads.length; i++) {
-      threads[i].removeLabel(lbl);
-      resetCount++;
+    // Use batch removeLabel (100 at a time) — much faster and avoids Gmail rate limits
+    for (var i = 0; i < threads.length; i += 100) {
+      var batch = threads.slice(i, i + 100);
+      lbl.removeFromThreads(batch);
+      resetCount += batch.length;
+      if (i + 100 < threads.length) Utilities.sleep(500);
     }
   }
 
