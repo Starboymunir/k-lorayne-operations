@@ -1,7 +1,7 @@
 /**
- * KLO Gmail → Tickets (AI-First v3)
+ * KLO Gmail → Tickets (AI-First v4 — OpenAI)
  *
- * Uses Gemini AI to intelligently classify every email sent to contact@kloapparel.com.
+ * Uses OpenAI GPT-4o-mini to intelligently classify every email sent to contact@kloapparel.com.
  * AI reads each email and decides: is this a real customer support issue or noise?
  *
  * Paste into https://script.google.com/ (logged into contact@kloapparel.com)
@@ -10,7 +10,7 @@
  * - KLO_INBOUND_TOKEN = <Render INBOUND_TOKEN>
  * - KLO_DEFAULT_ASSIGNEE = Krystle (or Showroom Manager)
  * - KLO_LOOKBACK_DAYS = 14
- * - KLO_GEMINI_API_KEY = <Google AI Studio API key>  ← REQUIRED
+ * - KLO_OPENAI_API_KEY = <OpenAI API key>  ← REQUIRED
  *
  * BACKFILL: Run kloBackfill() once to reset previously-ignored emails
  *          so they get re-evaluated with the latest rules.
@@ -22,10 +22,10 @@ function kloIngestAuto() {
   var inboundToken = props.getProperty('KLO_INBOUND_TOKEN');
   var defaultAssignee = props.getProperty('KLO_DEFAULT_ASSIGNEE') || 'Krystle';
   var lookbackDays = parseInt(props.getProperty('KLO_LOOKBACK_DAYS') || '14', 10);
-  var geminiApiKey = props.getProperty('KLO_GEMINI_API_KEY') || '';
+  var openaiApiKey = props.getProperty('KLO_OPENAI_API_KEY') || '';
 
   if (!inboundUrl) throw new Error('Missing script property KLO_INBOUND_URL');
-  if (!geminiApiKey) throw new Error('Missing script property KLO_GEMINI_API_KEY — get one free at aistudio.google.com');
+  if (!openaiApiKey) throw new Error('Missing script property KLO_OPENAI_API_KEY — get one at platform.openai.com');
 
   var ingestedLabel = ensureLabel_('KLO/Ingested');
   var failedLabel   = ensureLabel_('KLO/IngestFailed');
@@ -67,8 +67,8 @@ function kloIngestAuto() {
       continue;
     }
 
-    // ─── AI Classification — Gemini reads the email and decides ───
-    var aiResult = classifyWithGemini_(geminiApiKey, {
+    // ─── AI Classification — OpenAI reads the email and decides ───
+    var aiResult = classifyWithOpenAI_(openaiApiKey, {
       fromEmail: fromEmail,
       fromName: fromName,
       subject: subject,
@@ -161,14 +161,14 @@ function classifyByKeywords_(text, rules) {
   return null;
 }
 
-// ─── AI CLASSIFICATION (Gemini — primary classifier) ───
+// ─── AI CLASSIFICATION (OpenAI GPT-4o-mini — primary classifier) ───
 
 // Returns { ticket: true, name, category, priority } or { ticket: false, reason } or null on error
-function classifyWithGemini_(apiKey, email) {
+function classifyWithOpenAI_(apiKey, email) {
   try {
-    var url = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=' + encodeURIComponent(apiKey);
+    var url = 'https://api.openai.com/v1/chat/completions';
 
-    var prompt = [
+    var systemPrompt = [
       'You are the email triage system for K.Lorayne, a clothing brand.',
       'The email inbox is contact@kloapparel.com.',
       '',
@@ -207,7 +207,9 @@ function classifyWithGemini_(apiKey, email) {
       'Return ONLY valid JSON:',
       'If ticket: {"ticket":true,"type":"refund|shipping|delay|address|defective|sizing|return|general","priority":"low|medium|high","reason":"brief explanation"}',
       'If NOT ticket: {"ticket":false,"reason":"brief explanation"}',
-      '',
+    ].join('\n');
+
+    var userMessage = [
       'Email to classify:',
       'From: ' + (email.fromName || '') + ' <' + (email.fromEmail || '') + '>',
       'Subject: ' + (email.subject || ''),
@@ -215,8 +217,13 @@ function classifyWithGemini_(apiKey, email) {
     ].join('\n');
 
     var req = {
-      contents: [{ role: 'user', parts: [{ text: prompt }] }],
-      generationConfig: { temperature: 0, responseMimeType: 'application/json' },
+      model: 'gpt-4o-mini',
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userMessage },
+      ],
+      temperature: 0,
+      response_format: { type: 'json_object' },
     };
 
     // Retry with exponential backoff for rate limits (429)
@@ -231,22 +238,19 @@ function classifyWithGemini_(apiKey, email) {
       resp = UrlFetchApp.fetch(url, {
         method: 'post', contentType: 'application/json',
         payload: JSON.stringify(req), muteHttpExceptions: true,
+        headers: { 'Authorization': 'Bearer ' + apiKey },
       });
       if (resp.getResponseCode() !== 429) break;
     }
 
     if (resp.getResponseCode() < 200 || resp.getResponseCode() >= 300) {
-      Logger.log('Gemini API error: HTTP ' + resp.getResponseCode());
+      Logger.log('OpenAI API error: HTTP ' + resp.getResponseCode() + ' — ' + resp.getContentText());
       return null;
     }
 
-    // Pace requests to stay under rate limits (free tier: ~15/min)
-    Utilities.sleep(2000);
-
     var raw = JSON.parse(resp.getContentText() || '{}');
-    var text = raw && raw.candidates && raw.candidates[0] && raw.candidates[0].content
-      && raw.candidates[0].content.parts && raw.candidates[0].content.parts[0]
-      && raw.candidates[0].content.parts[0].text;
+    var text = raw && raw.choices && raw.choices[0] && raw.choices[0].message
+      && raw.choices[0].message.content;
     if (!text) return null;
 
     var out = JSON.parse(text);
@@ -268,7 +272,7 @@ function classifyWithGemini_(apiKey, email) {
 
     return { ticket: true, name: out.type || 'general', category: category, priority: priority };
   } catch (e) {
-    Logger.log('Gemini classification error: ' + e.message);
+    Logger.log('OpenAI classification error: ' + e.message);
     return null;
   }
 }
