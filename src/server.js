@@ -624,10 +624,8 @@ function autoSeedTickets(orders, customers) {
     const orderTotal = order.totalPriceSet?.shopMoney?.amount || '0';
     const currency = order.totalPriceSet?.shopMoney?.currencyCode || 'USD';
 
-    // Cancelled orders (only if order is > 7 days old)
+    // Cancelled orders
     if (order.cancelledAt) {
-      const daysSinceOrder = (Date.now() - new Date(order.createdAt)) / 86400000;
-      if (daysSinceOrder <= 7) continue;
       const seedKey = `${order.id}|cancelled`;
       if (existingSeedKeys.has(seedKey)) continue;
       const reason = order.cancelReason
@@ -665,11 +663,9 @@ function autoSeedTickets(orders, customers) {
       continue;
     }
 
-    // Refunded orders (only if order is > 7 days old)
+    // Refunded orders
     const refunded = parseFloat(order.totalRefundedSet?.shopMoney?.amount || 0);
     if (refunded > 0) {
-      const daysSinceOrder = (Date.now() - new Date(order.createdAt)) / 86400000;
-      if (daysSinceOrder <= 7) continue;
       const seedKey = `${order.id}|refunded`;
       if (existingSeedKeys.has(seedKey)) continue;
       const total = parseFloat(orderTotal);
