@@ -157,14 +157,22 @@ function kloIngestAuto() {
     var textToScan = (subjectLower + ' ' + bodySnippet.toLowerCase());
     var externalId = m.getId();
 
-    // ─── Step 1: Ignore known non-customer domains ───
-    if (domainMatches_(fromEmail, IGNORE_DOMAINS)) {
+    // ─── Step 0: Contact form submissions from Shopify — ALWAYS process ───
+    var isContactForm = (subjectLower.indexOf('contact form') >= 0 ||
+                         subjectLower.indexOf('contact us') >= 0 ||
+                         subjectLower.indexOf('form submission') >= 0 ||
+                         bodySnippet.toLowerCase().indexOf('contact form submission') >= 0 ||
+                         bodySnippet.toLowerCase().indexOf('submitted from your online store') >= 0 ||
+                         bodySnippet.toLowerCase().indexOf('message from your online store') >= 0);
+
+    // ─── Step 1: Ignore known non-customer domains (but NOT contact forms) ───
+    if (!isContactForm && domainMatches_(fromEmail, IGNORE_DOMAINS)) {
       thread.addLabel(ignoredLabel);
       continue;
     }
 
-    // ─── Step 2: Ignore known automated/promo subject lines ───
-    if (containsAny_(subjectLower, IGNORE_SUBJECTS)) {
+    // ─── Step 2: Ignore known automated/promo subject lines (but NOT contact forms) ───
+    if (!isContactForm && containsAny_(subjectLower, IGNORE_SUBJECTS)) {
       thread.addLabel(ignoredLabel);
       continue;
     }
@@ -203,10 +211,15 @@ function kloIngestAuto() {
       if (aiResult) matched = aiResult;
     }
 
-    // ─── Step 7: If still no match → IGNORE (not support!) ───
+    // ─── Step 7: If still no match → check if contact form (auto-categorize) or IGNORE ───
     if (!matched) {
-      thread.addLabel(ignoredLabel);
-      continue;
+      if (isContactForm) {
+        // Contact forms are always real customer messages — categorize as general support
+        matched = { name: 'contact_form', category: 'general', priority: 'medium' };
+      } else {
+        thread.addLabel(ignoredLabel);
+        continue;
+      }
     }
 
     // ─── Step 8: This IS a support email — create the ticket ───
@@ -384,12 +397,12 @@ function myFunction() {
 
 /**
  * BACKFILL — Run this ONCE to reset previously-ignored emails.
- * It removes the KLO/Ignored label from recent emails so that the next
- * kloIngestAuto() run will re-evaluate them with the updated rules.
+ * Removes BOTH KLO/Ignored AND KLO/Ingested labels from recent emails
+ * so that kloIngestAuto() will fully re-evaluate them with updated rules.
  *
  * Steps:
  *   1. Open Apps Script → Run → kloBackfill
- *   2. Wait for it to finish (check Execution log)
+ *   2. Check Execution Log for the count of reset threads
  *   3. Then run kloIngestAuto (or wait for the trigger)
  */
 function kloBackfill() {
@@ -397,20 +410,40 @@ function kloBackfill() {
   var backfillDays = parseInt(props.getProperty('KLO_LOOKBACK_DAYS') || '14', 10);
 
   var ignoredLabel = GmailApp.getUserLabelByName('KLO/Ignored');
-  if (!ignoredLabel) { Logger.log('No KLO/Ignored label found — nothing to reset.'); return; }
-
-  // Also clear old KLO/Processed label if present (from v1 script)
+  var ingestedLabel = GmailApp.getUserLabelByName('KLO/Ingested');
   var processedLabel = GmailApp.getUserLabelByName('KLO/Processed');
 
-  var q = 'to:contact@kloapparel.com newer_than:' + backfillDays + 'd label:' + ignoredLabel.getName();
-  var threads = GmailApp.search(q, 0, 200);
   var resetCount = 0;
 
-  for (var i = 0; i < threads.length; i++) {
-    threads[i].removeLabel(ignoredLabel);
-    if (processedLabel) { try { threads[i].removeLabel(processedLabel); } catch(e) {} }
-    resetCount++;
+  // Reset ignored threads
+  if (ignoredLabel) {
+    var q1 = 'to:contact@kloapparel.com newer_than:' + backfillDays + 'd label:' + ignoredLabel.getName().replace(/\//g, '-');
+    Logger.log('Backfill search (ignored): ' + q1);
+    var threads1 = GmailApp.search(q1, 0, 500);
+    Logger.log('Found ' + threads1.length + ' ignored threads');
+    for (var i = 0; i < threads1.length; i++) {
+      threads1[i].removeLabel(ignoredLabel);
+      if (processedLabel) { try { threads1[i].removeLabel(processedLabel); } catch(e) {} }
+      resetCount++;
+    }
+  } else {
+    Logger.log('No KLO/Ignored label found');
   }
 
-  Logger.log('Backfill complete: reset ' + resetCount + ' threads. Run kloIngestAuto() next to re-process them.');
+  // Also reset ingested threads so they can be re-evaluated
+  if (ingestedLabel) {
+    var q2 = 'to:contact@kloapparel.com newer_than:' + backfillDays + 'd label:' + ingestedLabel.getName().replace(/\//g, '-');
+    Logger.log('Backfill search (ingested): ' + q2);
+    var threads2 = GmailApp.search(q2, 0, 500);
+    Logger.log('Found ' + threads2.length + ' ingested threads');
+    for (var j = 0; j < threads2.length; j++) {
+      threads2[j].removeLabel(ingestedLabel);
+      if (processedLabel) { try { threads2[j].removeLabel(processedLabel); } catch(e) {} }
+      resetCount++;
+    }
+  } else {
+    Logger.log('No KLO/Ingested label found');
+  }
+
+  Logger.log('Backfill complete: reset ' + resetCount + ' total threads. Run kloIngestAuto() next.');
 }
