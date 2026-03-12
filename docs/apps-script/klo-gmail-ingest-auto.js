@@ -32,8 +32,12 @@ function kloIngestAuto() {
   var ignoredLabel  = ensureLabel_('KLO/Ignored');
   var supportLabel  = ensureLabel_('KLO/ToTicket/Support');
 
-  // Search: emails to contact@, recent, NOT already processed or ignored
-  var q = 'to:contact@kloapparel.com newer_than:' + lookbackDays + 'd -label:' + ingestedLabel.getName() + ' -label:' + ignoredLabel.getName();
+  // In backfill mode, don't use -label: exclusions (Gmail index lags after label removal)
+  var backfillMode = props.getProperty('KLO_BACKFILL_MODE') === 'true';
+  var q = 'to:contact@kloapparel.com newer_than:' + lookbackDays + 'd';
+  if (!backfillMode) {
+    q += ' -label:' + ingestedLabel.getName() + ' -label:' + ignoredLabel.getName();
+  }
   var threads = GmailApp.search(q, 0, 100);
   var startTime = new Date().getTime();
   var processed = 0;
@@ -49,6 +53,14 @@ function kloIngestAuto() {
     var thread = threads[i];
     var msgs = thread.getMessages();
     if (!msgs || msgs.length === 0) continue;
+
+    // In backfill mode, skip threads already processed (label check in code, not search)
+    if (backfillMode) {
+      var threadLabels = thread.getLabels().map(function(l) { return l.getName(); });
+      if (threadLabels.indexOf(ingestedLabel.getName()) >= 0 || threadLabels.indexOf(ignoredLabel.getName()) >= 0) {
+        continue;
+      }
+    }
 
     // Use the LATEST message in the thread (catches customer replies)
     var m = msgs[msgs.length - 1];
@@ -137,7 +149,7 @@ function kloIngestAuto() {
   Logger.log('Ingestion done: processed ' + processed + ' threads.');
 }
 
-// ─── KEYWORD FALLBACK (only used if Gemini is down) ───
+// ─── KEYWORD FALLBACK (only used if OpenAI is down) ───
 
 var SUPPORT_RULES = [
   { name: 'refund', keywords: ['refund', 'money back', 'charge back', 'chargeback', 'dispute', 'cancel my order', 'cancel order', 'cancellation'], category: 'returns', priority: 'high' },
@@ -353,15 +365,16 @@ function kloBackfill() {
   var props = PropertiesService.getScriptProperties();
   var originalLookback = props.getProperty('KLO_LOOKBACK_DAYS') || '14';
   props.setProperty('KLO_LOOKBACK_DAYS', '60');
+  props.setProperty('KLO_BACKFILL_MODE', 'true');
 
   try {
     // Process in batches to stay within Apps Script 6-minute limit
-    // Each Gemini call takes ~2-4 seconds, so ~100 emails per run max
     kloIngestAuto();
     Logger.log('Backfill ingestion complete!');
   } finally {
-    // Restore original lookback
+    // Restore original settings
     props.setProperty('KLO_LOOKBACK_DAYS', originalLookback);
+    props.deleteProperty('KLO_BACKFILL_MODE');
     Logger.log('Restored KLO_LOOKBACK_DAYS to ' + originalLookback);
   }
 }
