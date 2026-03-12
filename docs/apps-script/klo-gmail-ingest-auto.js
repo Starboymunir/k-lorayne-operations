@@ -55,11 +55,10 @@ function kloIngestAuto() {
     }
 
     var thread = threads[i];
-    var firstMsg = thread.getMessages()[0];
-    if (!firstMsg) { skipped++; continue; }
+    var msgs = thread.getMessages();
+    if (!msgs || msgs.length === 0) { skipped++; continue; }
 
     // Get the LATEST message in the thread (catches customer replies)
-    var msgs = thread.getMessages();
     var m = msgs[msgs.length - 1];
     var fromRaw = m.getFrom() || '';
     var fromEmail = extractEmail_(fromRaw).toLowerCase();
@@ -187,39 +186,46 @@ function classifyWithOpenAI_(apiKey, email) {
       'The email inbox is contact@kloapparel.com.',
       '',
       'Your job: read this email and decide if it needs a support ticket or not.',
+      'DEFAULT TO CREATING A TICKET. When in doubt, CREATE a ticket. Only ignore things that are clearly automated noise with no customer involved.',
       '',
-      'CREATE A TICKET for:',
-      '- A real customer asking about their order (status, shipping, delivery)',
+      'ALWAYS CREATE A TICKET for:',
+      '- ANY message from a real customer (order questions, complaints, inquiries, anything)',
+      '- Shopify Inbox customer chat messages (subject like "New customer message" or "New message from...")',
+      '- A customer asking about their order (status, shipping, delivery)',
       '- A customer wanting a refund, cancellation, or chargeback dispute',
       '- A customer reporting a damaged, defective, or wrong item',
       '- A customer wanting to return or exchange something',
       '- A customer asking about sizing or fit',
       '- A customer wanting to change their shipping address',
-      '- A customer reaching out via a contact form on the website',
-      '- Any message from a real person that needs a human response',
-      '- Shopify chargeback/dispute notifications (these need action)',
-      '- Shopify refund requests from customers',
+      '- Contact form submissions from the website',
+      '- ANY message that a human might need to read and respond to',
+      '- Shopify chargeback/dispute notifications',
+      '- Shopify refund requests',
+      '- Anything where a customer is trying to reach the store',
       '',
-      'DO NOT create a ticket for:',
-      '- Automated Shopify notifications (new order, order confirmed, shipping label created, payout)',
-      '- Marketing emails, newsletters, promos, ads, sale alerts',
-      '- Social media notifications (Facebook, Instagram, TikTok, etc.)',
-      '- Payment processor receipts (Stripe, PayPal, etc.)',
-      '- Shipping carrier tracking updates (USPS, FedEx, UPS, etc.)',
-      '- Review platform notifications (Judge.me, Yotpo, etc.)',
-      '- System emails (password reset, verify email, security alerts)',
-      '- Spam or irrelevant emails',
-      '- Shopify merchant support chat updates (from Shopify to the store owner)',
+      'ONLY ignore these (clearly automated noise with NO customer action needed):',
+      '- Order confirmation emails ("You have a new order #1234", "Order confirmed")',
+      '- Shipping label created notifications',
+      '- Payout/deposit notifications',
+      '- Marketing emails, newsletters, promos from OTHER brands',
+      '- Social media notifications (Facebook, Instagram, TikTok)',
+      '- Payment processor receipts (Stripe, PayPal)',
+      '- Carrier tracking updates (USPS, FedEx, UPS) that are just status updates',
+      '- Review request emails (Judge.me, Yotpo asking customer to leave review)',
+      '- Password reset / verify email / security alerts',
+      '- Spam',
+      '- Shopify billing, invoices, subscription emails (store owner admin)',
       '- App install/remove notifications',
-      '- Shopify billing, invoices, or subscription emails',
       '',
-      'IMPORTANT: Emails from Shopify domains (shopify.com, shopifyemail.com) can be EITHER.',
-      'A "Contact form submission" from Shopify = TICKET (customer reaching out).',
-      'A "You have a new order #1234" from Shopify = NOT a ticket (automated notification).',
-      'Read the CONTENT, not just the sender domain.',
+      'IMPORTANT RULES:',
+      '- "New customer message" from Shopify = ALWAYS a ticket (customer is chatting)',
+      '- "Contact form submission" = ALWAYS a ticket',
+      '- If a real person wrote something, it\'s a ticket',
+      '- Shopify Support Chat updates (from Shopify support TO the store owner) = NOT a ticket',
+      '- When in doubt, CREATE THE TICKET',
       '',
       'Return ONLY valid JSON:',
-      'If ticket: {"ticket":true,"type":"refund|shipping|delay|address|defective|sizing|return|general","priority":"low|medium|high","reason":"brief explanation"}',
+      'If ticket: {"ticket":true,"type":"refund|shipping|delay|address|defective|sizing|return|chat|general","priority":"low|medium|high","reason":"brief explanation"}',
       'If NOT ticket: {"ticket":false,"reason":"brief explanation"}',
     ].join('\n');
 
@@ -278,7 +284,7 @@ function classifyWithOpenAI_(apiKey, email) {
     var typeMap = {
       refund: 'returns', shipping: 'shipping', delay: 'order_status',
       address: 'shipping', defective: 'damage', sizing: 'sizing',
-      'return': 'returns', general: 'general',
+      'return': 'returns', chat: 'general', general: 'general',
     };
     var category = typeMap[out.type] || 'general';
     var priority = out.priority || 'medium';
