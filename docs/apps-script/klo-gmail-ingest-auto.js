@@ -200,7 +200,18 @@ var MARKETING_DOMAINS = [
   '@gotprint.com', '@shop.tiktok.com',
 ];
 
+// Subject patterns that should ALWAYS go to AI (never pre-filter skip)
+var ALWAYS_TICKET_PATTERNS = [
+  /new customer message/i,
+  /new message from/i,
+  /shopify inbox/i,
+];
+
 function isObviousNoise_(fromEmail, subject) {
+  // Exemptions first — these must NEVER be skipped, even from noreply senders
+  for (var i = 0; i < ALWAYS_TICKET_PATTERNS.length; i++) {
+    if (ALWAYS_TICKET_PATTERNS[i].test(subject)) return null;
+  }
   var subjectLower = subject.toLowerCase();
   // Check known noise senders
   for (var i = 0; i < NOISE_DOMAINS.length; i++) {
