@@ -126,44 +126,31 @@ function fmtDateTime(d) {
   if (!d) return '—';
   const date = new Date(d);
   if (Number.isNaN(date.getTime())) return '—';
-  try {
-    return new Intl.DateTimeFormat(undefined, {
-      year: 'numeric', month: 'short', day: '2-digit',
-      hour: 'numeric', minute: '2-digit',
-      timeZoneName: 'short',
-    }).format(date);
-  } catch {
-    return date.toLocaleString();
-  }
+  return smartDate_(date);
 }
 function fmtTicketCardTime(d) {
   if (!d) return '—';
   const date = new Date(d);
   if (Number.isNaN(date.getTime())) return '—';
-
+  return smartDate_(date);
+}
+function smartDate_(date) {
   const now = new Date();
-  const sameDay =
-    date.getFullYear() === now.getFullYear() &&
-    date.getMonth() === now.getMonth() &&
-    date.getDate() === now.getDate();
-
-  if (sameDay) {
-    try {
-      return new Intl.DateTimeFormat(undefined, {
-        hour: 'numeric',
-        minute: '2-digit',
-        timeZoneName: 'short',
-      }).format(date);
-    } catch {
-      return date.toLocaleTimeString();
-    }
-  }
-
   const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const startOfThatDay = new Date(date.getFullYear(), date.getMonth(), date.getDate());
-  const daysAgo = Math.floor((startOfToday - startOfThatDay) / 86400000);
-  if (!Number.isFinite(daysAgo) || daysAgo < 0) return fmtDateTime(d);
-  return `${daysAgo}d ago`;
+  const daysAgo = Math.round((startOfToday - startOfThatDay) / 86400000);
+
+  const timePart = date.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+
+  if (daysAgo === 0) return timePart;
+  if (daysAgo === 1) return 'Yesterday, ' + timePart;
+
+  const datePart = date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  // Show year if not current year
+  if (date.getFullYear() !== now.getFullYear()) {
+    return datePart + ', ' + date.getFullYear() + ', ' + timePart;
+  }
+  return datePart + ', ' + timePart;
 }
 function timeAgo(d) {
   if (!d) return '—';
