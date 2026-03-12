@@ -40,22 +40,26 @@ function kloIngestAuto() {
   }
   var batchSize = backfillMode ? 500 : 100;
   var threads = GmailApp.search(q, 0, batchSize);
+  Logger.log('Found ' + threads.length + ' threads to process (backfill=' + backfillMode + ')');
   var startTime = new Date().getTime();
-  var processed = 0;
+  var ticketed = 0;
+  var ignored = 0;
+  var skipped = 0;
 
   for (var i = 0; i < threads.length; i++) {
     // Guard against Apps Script 6-minute time limit — stop at 5 min to be safe
     var elapsed = (new Date().getTime() - startTime) / 1000;
     if (elapsed > 300) {
-      Logger.log('TIME LIMIT: Processed ' + processed + '/' + threads.length + ' threads in 5 min. Run again to continue.');
+      Logger.log('TIME LIMIT: ' + (ticketed + ignored + skipped) + '/' + threads.length + ' threads in 5 min (' + ticketed + ' ticketed, ' + ignored + ' ignored, ' + skipped + ' skipped). Run again to continue.');
       break;
     }
 
     var thread = threads[i];
-    var msgs = thread.getMessages();
-    if (!msgs || msgs.length === 0) continue;
+    var firstMsg = thread.getMessages()[0];
+    if (!firstMsg) { skipped++; continue; }
 
-    // Use the LATEST message in the thread (catches customer replies)
+    // Get the LATEST message in the thread (catches customer replies)
+    var msgs = thread.getMessages();
     var m = msgs[msgs.length - 1];
     var fromRaw = m.getFrom() || '';
     var fromEmail = extractEmail_(fromRaw).toLowerCase();
@@ -63,12 +67,15 @@ function kloIngestAuto() {
     var subjectRaw = m.getSubject() || '(no subject)';
     var subject = String(subjectRaw);
     var body = m.getPlainBody ? m.getPlainBody() : m.getBody();
-    var bodySnippet = getBodySnippet_(body, 2000);
+    var bodySnippet = getBodySnippet_(body, 1500);
     var externalId = m.getId();
+
+    Logger.log('[' + (i + 1) + '/' + threads.length + '] "' + subject + '" from ' + fromEmail);
 
     // ─── Quick skip: internal emails ───
     if (fromEmail.endsWith('@kloapparel.com') || fromEmail.endsWith('@klorayne.com')) {
       thread.addLabel(ignoredLabel);
+      ignored++;
       continue;
     }
 
@@ -82,8 +89,9 @@ function kloIngestAuto() {
 
     if (aiResult && !aiResult.ticket) {
       // AI says this is NOT a support email — ignore it
-      Logger.log('AI IGNORED: "' + subject + '" from ' + fromEmail + ' — ' + (aiResult.reason || 'not support'));
+      Logger.log('AI IGNORED: "' + subject + '" — ' + (aiResult.reason || 'not support'));
       thread.addLabel(ignoredLabel);
+      ignored++;
       continue;
     }
 
@@ -98,8 +106,9 @@ function kloIngestAuto() {
       matched = classifyByKeywords_(subject.toLowerCase() + ' ' + bodySnippet.toLowerCase(), SUPPORT_RULES);
       if (!matched) {
         // No keyword match either — safer to IGNORE than create noise
-        Logger.log('FALLBACK IGNORED: "' + subject + '" — no keyword match, skipping');
+        Logger.log('FALLBACK IGNORED: "' + subject + '" — no keyword match');
         thread.addLabel(ignoredLabel);
+        ignored++;
         continue;
       }
     }
@@ -137,9 +146,9 @@ function kloIngestAuto() {
       Logger.log('Failed ingest HTTP ' + code + ': ' + resp.getContentText());
       thread.addLabel(failedLabel);
     }
-    processed++;
+    ticketed++;
   }
-  Logger.log('Ingestion done: processed ' + processed + ' threads.');
+  Logger.log('Done: ' + ticketed + ' ticketed, ' + ignored + ' ignored, ' + skipped + ' skipped out of ' + threads.length + ' threads.');
 }
 
 // ─── KEYWORD FALLBACK (only used if OpenAI is down) ───
