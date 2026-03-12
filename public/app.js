@@ -1552,6 +1552,12 @@ async function loadTickets() {
         ? tickets.filter(t => (t.channel || 'shopify') !== 'email')
         : tickets.filter(t => (t.channel || 'shopify') === 'email');
 
+      // Update category pill counts to reflect current channel tab
+      _categories.forEach(c => {
+        const el = document.querySelector(`[data-catcount="${c.id}"]`);
+        if (el) el.textContent = visible.filter(t => t.category === c.id).length;
+      });
+
       if (!visible.length) {
         const label = channelTab === 'shopify' ? 'Shopify order' : 'email';
         list.innerHTML = `<div class="empty-state" style="padding:40px"><h3>No ${label} tickets found</h3><p>Adjust your filters or switch tabs.</p></div>`;
