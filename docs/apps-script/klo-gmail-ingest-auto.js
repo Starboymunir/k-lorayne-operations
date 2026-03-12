@@ -396,54 +396,63 @@ function myFunction() {
 }
 
 /**
- * BACKFILL — Run this ONCE to reset previously-ignored emails.
- * Removes BOTH KLO/Ignored AND KLO/Ingested labels from recent emails
- * so that kloIngestAuto() will fully re-evaluate them with updated rules.
+ * BACKFILL — Run this ONCE to reset ALL labels and re-ingest everything.
  *
- * Steps:
- *   1. Open Apps Script → Run → kloBackfill
- *   2. Check Execution Log for the count of reset threads
- *   3. Then run kloIngestAuto (or wait for the trigger)
+ * What it does:
+ *   1. Strips KLO/Ignored, KLO/Ingested, KLO/Processed, KLO/ToTicket/Support
+ *      from ALL emails in the last 60 days
+ *   2. Automatically runs ingestion (60-day window) so tickets appear in the app
+ *
+ * Just run kloBackfill — that's it. No need to run kloIngestAuto after.
  */
 function kloBackfill() {
-  // Always look back 60 days for backfill — independent of KLO_LOOKBACK_DAYS
   var backfillDays = 60;
 
-  var ignoredLabel = GmailApp.getUserLabelByName('KLO/Ignored');
-  var ingestedLabel = GmailApp.getUserLabelByName('KLO/Ingested');
-  var processedLabel = GmailApp.getUserLabelByName('KLO/Processed');
+  // Get all KLO labels
+  var labels = {
+    ignored:   GmailApp.getUserLabelByName('KLO/Ignored'),
+    ingested:  GmailApp.getUserLabelByName('KLO/Ingested'),
+    processed: GmailApp.getUserLabelByName('KLO/Processed'),
+    support:   GmailApp.getUserLabelByName('KLO/ToTicket/Support'),
+    failed:    GmailApp.getUserLabelByName('KLO/IngestFailed'),
+  };
 
   var resetCount = 0;
+  var labelNames = ['ignored', 'ingested', 'processed', 'support', 'failed'];
 
-  // Reset ignored threads
-  if (ignoredLabel) {
-    var q1 = 'to:contact@kloapparel.com newer_than:' + backfillDays + 'd label:' + ignoredLabel.getName().replace(/\//g, '-');
-    Logger.log('Backfill search (ignored): ' + q1);
-    var threads1 = GmailApp.search(q1, 0, 500);
-    Logger.log('Found ' + threads1.length + ' ignored threads');
-    for (var i = 0; i < threads1.length; i++) {
-      threads1[i].removeLabel(ignoredLabel);
-      if (processedLabel) { try { threads1[i].removeLabel(processedLabel); } catch(e) {} }
+  for (var n = 0; n < labelNames.length; n++) {
+    var lbl = labels[labelNames[n]];
+    if (!lbl) {
+      Logger.log('Label KLO/' + labelNames[n] + ' not found — skipping');
+      continue;
+    }
+
+    // GmailApp.search uses the label name as-is (with slashes)
+    var q = 'to:contact@kloapparel.com newer_than:' + backfillDays + 'd label:' + lbl.getName();
+    Logger.log('Stripping ' + lbl.getName() + ' — query: ' + q);
+    var threads = GmailApp.search(q, 0, 500);
+    Logger.log('Found ' + threads.length + ' threads with ' + lbl.getName());
+
+    for (var i = 0; i < threads.length; i++) {
+      threads[i].removeLabel(lbl);
       resetCount++;
     }
-  } else {
-    Logger.log('No KLO/Ignored label found');
   }
 
-  // Also reset ingested threads so they can be re-evaluated
-  if (ingestedLabel) {
-    var q2 = 'to:contact@kloapparel.com newer_than:' + backfillDays + 'd label:' + ingestedLabel.getName().replace(/\//g, '-');
-    Logger.log('Backfill search (ingested): ' + q2);
-    var threads2 = GmailApp.search(q2, 0, 500);
-    Logger.log('Found ' + threads2.length + ' ingested threads');
-    for (var j = 0; j < threads2.length; j++) {
-      threads2[j].removeLabel(ingestedLabel);
-      if (processedLabel) { try { threads2[j].removeLabel(processedLabel); } catch(e) {} }
-      resetCount++;
-    }
-  } else {
-    Logger.log('No KLO/Ingested label found');
-  }
+  Logger.log('Backfill: stripped labels from ' + resetCount + ' threads total.');
+  Logger.log('Now running ingestion with 60-day lookback...');
 
-  Logger.log('Backfill complete: reset ' + resetCount + ' total threads. Run kloIngestAuto() next.');
+  // Temporarily override lookback to 60 days and run ingestion
+  var props = PropertiesService.getScriptProperties();
+  var originalLookback = props.getProperty('KLO_LOOKBACK_DAYS') || '14';
+  props.setProperty('KLO_LOOKBACK_DAYS', '60');
+
+  try {
+    kloIngestAuto();
+    Logger.log('Backfill ingestion complete!');
+  } finally {
+    // Restore original lookback
+    props.setProperty('KLO_LOOKBACK_DAYS', originalLookback);
+    Logger.log('Restored KLO_LOOKBACK_DAYS to ' + originalLookback);
+  }
 }
