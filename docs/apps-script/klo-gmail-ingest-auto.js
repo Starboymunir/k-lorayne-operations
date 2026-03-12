@@ -1,11 +1,8 @@
 /**
- * KLO Gmail → Tickets (Auto Rules v2)
+ * KLO Gmail → Tickets (AI-First v3)
  *
- * Only creates tickets for REAL customer support emails about:
- *   refunds, shipping issues, order delays, address changes,
- *   defective/damaged items, wrong size/fit
- *
- * Everything else (ads, promos, newsletters, Shopify notifications) is ignored.
+ * Uses Gemini AI to intelligently classify every email sent to contact@kloapparel.com.
+ * AI reads each email and decides: is this a real customer support issue or noise?
  *
  * Paste into https://script.google.com/ (logged into contact@kloapparel.com)
  * Configure Script Properties:
@@ -13,9 +10,7 @@
  * - KLO_INBOUND_TOKEN = <Render INBOUND_TOKEN>
  * - KLO_DEFAULT_ASSIGNEE = Krystle (or Showroom Manager)
  * - KLO_LOOKBACK_DAYS = 14
- *
- * Optional AI triage (improves accuracy):
- * - KLO_GEMINI_API_KEY = <Google AI Studio API key>
+ * - KLO_GEMINI_API_KEY = <Google AI Studio API key>  ← REQUIRED
  *
  * BACKFILL: Run kloBackfill() once to reset previously-ignored emails
  *          so they get re-evaluated with the latest rules.
@@ -30,116 +25,12 @@ function kloIngestAuto() {
   var geminiApiKey = props.getProperty('KLO_GEMINI_API_KEY') || '';
 
   if (!inboundUrl) throw new Error('Missing script property KLO_INBOUND_URL');
+  if (!geminiApiKey) throw new Error('Missing script property KLO_GEMINI_API_KEY — get one free at aistudio.google.com');
 
   var ingestedLabel = ensureLabel_('KLO/Ingested');
   var failedLabel   = ensureLabel_('KLO/IngestFailed');
   var ignoredLabel  = ensureLabel_('KLO/Ignored');
   var supportLabel  = ensureLabel_('KLO/ToTicket/Support');
-
-  // ─── DOMAINS TO ALWAYS IGNORE (ads, marketing, notifications) ───
-  var IGNORE_DOMAINS = [
-    // Shopify — NOT blocked here. Many real customer emails come through Shopify
-    // (contact forms, forwarded messages). Shopify noise is filtered by IGNORE_SUBJECTS instead.
-    // Marketing / Newsletter platforms
-    'mailchimp.com', 'mandrillapp.com', 'klaviyo.com', 'sendgrid.net', 'sendgrid.com',
-    'omnisend.com', 'mailgun.org', 'mailgun.com', 'constantcontact.com',
-    'hubspot.com', 'hubspotmail.com', 'sendinblue.com', 'brevo.com',
-    'mailerlite.com', 'drip.com', 'convertkit.com', 'activecampaign.com',
-    'getresponse.com', 'aweber.com', 'campaignmonitor.com', 'moosend.com',
-    'flodesk.com', 'beehiiv.com', 'substack.com',
-    // Social media notifications
-    'facebookmail.com', 'instagram.com', 'tiktok.com', 'twitter.com', 'x.com',
-    'pinterest.com', 'linkedin.com', 'youtube.com',
-    // Payment processors (notifications, not customer messages)
-    'paypal.com', 'stripe.com', 'squareup.com', 'afterpay.com',
-    'klarna.com', 'affirm.com', 'sezzle.com',
-    // Shipping carrier notifications
-    'ups.com', 'fedex.com', 'usps.com', 'dhl.com', 'shipstation.com',
-    'shippo.com', 'easypost.com', 'aftership.com', 'route.com',
-    // Review platforms (not customer inquiries)
-    'judge.me', 'stamped.io', 'yotpo.com', 'okendo.io', 'reviews.io', 'loox.io',
-    // Google / system
-    'google.com', 'googlemail.com', 'accounts.google.com',
-    // Other common non-customer senders
-    'notion.so', 'slack.com', 'zoom.us', 'calendly.com', 'canva.com',
-    'godaddy.com', 'namecheap.com', 'render.com', 'github.com',
-    'noreply.github.com', 'vercel.com', 'netlify.com',
-  ];
-
-  // ─── SUBJECT LINES TO ALWAYS IGNORE ───
-  var IGNORE_SUBJECTS = [
-    'new order', 'order confirmation', "you've received a new order",
-    'your order is confirmed', 'shipping confirmation', 'delivery confirmation',
-    'payment failed', 'payment received', 'payout', 'your payout',
-    'newsletter', 'weekly digest', 'monthly recap', 'sale alert',
-    'flash sale', 'limited time', 'discount code', 'promo code',
-    'free shipping', 'shop now', 'buy now', 'deal of the day',
-    'don\'t miss', 'last chance', 'expires today', 'act now',
-    'unsubscribe', 'subscription confirmed', 'welcome to',
-    'verify your email', 'confirm your email', 'password reset',
-    'security alert', 'sign-in', 'login attempt',
-    'invoice', 'your receipt', 'billing statement',
-    'your shipment is on the way', 'tracking number', 'out for delivery', 'has been delivered',
-    // Shopify-specific automated notifications (noise)
-    'shopify support chat', 'your trial', 'your shopify store',
-    'staff account', 'collaborator request', 'app installed', 'app removed',
-    'theme update', 'domain verified', 'dns settings',
-    'payout for', 'label purchased', 'shipping label created',
-    'abandoned checkout', 'draft order created',
-  ];
-
-  // ─── SUPPORT KEYWORDS — only emails matching these become tickets ───
-  // Each group: { keywords: [...], category: 'crm_category', priority: 'low|medium|high' }
-  var SUPPORT_RULES = [
-    {
-      name: 'refund',
-      keywords: ['refund', 'money back', 'get my money', 'charge back', 'chargeback', 'dispute', 'cancel my order', 'cancel order', 'cancellation', 'want to cancel'],
-      category: 'returns',
-      priority: 'high',
-    },
-    {
-      name: 'shipping',
-      keywords: ['shipping', 'ship my order', 'not shipped', 'hasn\'t shipped', 'hasnt shipped', 'where is my order', 'where\'s my order', 'wheres my order', 'tracking', 'track my order', 'lost package', 'lost in transit', 'never received', 'didn\'t receive', 'didnt receive', 'not delivered', 'missing package', 'missing order', 'haven\'t received', 'havent received', 'still haven\'t got', 'still havent got', 'package lost', 'order lost', 'not arrived', 'hasn\'t arrived', 'hasnt arrived', 'never arrived', 'where is it', 'where\'s my package', 'not here yet'],
-      category: 'shipping',
-      priority: 'medium',
-    },
-    {
-      name: 'delay',
-      keywords: ['delay', 'delayed', 'taking too long', 'taking so long', 'still waiting', 'been waiting', 'how long', 'when will', 'when is my order', 'order status', 'update on my order', 'update on order', 'eta', 'expected delivery'],
-      category: 'order_status',
-      priority: 'medium',
-    },
-    {
-      name: 'address',
-      keywords: ['change address', 'change my address', 'wrong address', 'update address', 'update my address', 'change shipping', 'change delivery', 'new address', 'moved', 'ship to different', 'redirect', 'update my delivery', 'change my delivery', 'correct address', 'fix address', 'fix my address', 'delivery address', 'delivery info', 'shipping info', 'update shipping'],
-      category: 'shipping',
-      priority: 'high',
-    },
-    {
-      name: 'defective',
-      keywords: ['defective', 'damaged', 'broken', 'ripped', 'torn', 'stain', 'stained', 'hole', 'faulty', 'quality issue', 'poor quality', 'fell apart', 'falling apart', 'not as described', 'looks different', 'wrong item', 'wrong product', 'sent me the wrong', 'received wrong'],
-      category: 'damage',
-      priority: 'high',
-    },
-    {
-      name: 'sizing',
-      keywords: ['wrong size', 'too small', 'too big', 'too large', 'too tight', 'too loose', 'doesn\'t fit', 'doesnt fit', 'does not fit', 'didn\'t fit', 'didnt fit', 'size exchange', 'exchange size', 'exchange for', 'swap size', 'return for size', 'sizing', 'size chart', 'what size', 'which size', 'size guide', 'true to size', 'runs small', 'runs large', 'runs big'],
-      category: 'sizing',
-      priority: 'medium',
-    },
-    {
-      name: 'return',
-      keywords: ['return', 'returning', 'send back', 'send it back', 'return label', 'return policy', 'exchange', 'swap', 'replace', 'replacement'],
-      category: 'returns',
-      priority: 'medium',
-    },
-    {
-      name: 'general_support',
-      keywords: ['help with my order', 'need help', 'help me', 'customer service', 'support', 'question about my order', 'issue with my order', 'problem with my order', 'order issue', 'order problem', 'complaint', 'not happy', 'unhappy', 'disappointed', 'frustrated', 'urgent', 'asap', 'please help', 'can you help', 'reach out', 'reaching out', 'follow up', 'following up', 'i ordered', 'my order', 'order number', 'order #'],
-      category: 'general',
-      priority: 'medium',
-    },
-  ];
 
   // Search: emails to contact@, recent, NOT already processed or ignored
   var q = 'to:contact@kloapparel.com newer_than:' + lookbackDays + 'd -label:' + ingestedLabel.getName() + ' -label:' + ignoredLabel.getName();
@@ -157,77 +48,46 @@ function kloIngestAuto() {
     var fromName = extractName_(fromRaw);
     var subjectRaw = m.getSubject() || '(no subject)';
     var subject = String(subjectRaw);
-    var subjectLower = subject.toLowerCase();
     var body = m.getPlainBody ? m.getPlainBody() : m.getBody();
     var bodySnippet = getBodySnippet_(body, 2000);
-    var textToScan = (subjectLower + ' ' + bodySnippet.toLowerCase());
     var externalId = m.getId();
 
-    // ─── Step 1: CHECK SUPPORT KEYWORDS FIRST ───
-    // If the email matches ANY support keyword, it's a ticket — skip all ignore filters.
-    // This prevents real support emails from being killed by overly broad ignore rules.
-    var matched = classifyByKeywords_(textToScan, SUPPORT_RULES);
+    // ─── Quick skip: internal emails ───
+    if (fromEmail.endsWith('@kloapparel.com') || fromEmail.endsWith('@klorayne.com')) {
+      thread.addLabel(ignoredLabel);
+      continue;
+    }
 
-    // ─── Step 2: Contact form detection ───
-    var isContactForm = (subjectLower.indexOf('contact form') >= 0 ||
-                         subjectLower.indexOf('contact us') >= 0 ||
-                         subjectLower.indexOf('form submission') >= 0 ||
-                         bodySnippet.toLowerCase().indexOf('contact form submission') >= 0 ||
-                         bodySnippet.toLowerCase().indexOf('submitted from your online store') >= 0 ||
-                         bodySnippet.toLowerCase().indexOf('message from your online store') >= 0);
+    // ─── AI Classification — Gemini reads the email and decides ───
+    var aiResult = classifyWithGemini_(geminiApiKey, {
+      fromEmail: fromEmail,
+      fromName: fromName,
+      subject: subject,
+      bodySnippet: bodySnippet,
+    });
 
-    // If keyword matched or contact form → skip all ignore filters, go straight to ticket
-    if (!matched && !isContactForm) {
+    if (aiResult && !aiResult.ticket) {
+      // AI says this is NOT a support email — ignore it
+      Logger.log('AI IGNORED: "' + subject + '" from ' + fromEmail + ' — ' + (aiResult.reason || 'not support'));
+      thread.addLabel(ignoredLabel);
+      continue;
+    }
 
-      // ─── Step 3: Ignore emails from own domain (internal) ───
-      if (fromEmail.endsWith('@kloapparel.com') || fromEmail.endsWith('@klorayne.com')) {
-        thread.addLabel(ignoredLabel);
-        continue;
-      }
-
-      // ─── Step 4: Ignore known non-customer domains ───
-      if (domainMatches_(fromEmail, IGNORE_DOMAINS)) {
-        thread.addLabel(ignoredLabel);
-        continue;
-      }
-
-      // ─── Step 5: Ignore known automated/promo subject lines ───
-      if (containsAny_(subjectLower, IGNORE_SUBJECTS)) {
-        thread.addLabel(ignoredLabel);
-        continue;
-      }
-
-      // ─── Step 6: Ignore likely marketing (2+ signals in body) ───
-      var marketingSignals = ['unsubscribe', 'view in browser', 'view this email in', 'email preferences',
-        'manage preferences', 'opt out', 'no longer wish to receive', 'update your preferences',
-        'powered by klaviyo', 'powered by mailchimp', 'sent via', 'view online'];
-      var marketingHits = 0;
-      for (var ms = 0; ms < marketingSignals.length; ms++) {
-        if (textToScan.indexOf(marketingSignals[ms]) >= 0) marketingHits++;
-      }
-      if (marketingHits >= 2) {
-        thread.addLabel(ignoredLabel);
-        continue;
-      }
-
-      // ─── Step 7: Optional AI triage ───
-      if (geminiApiKey) {
-        var aiResult = classifyWithGemini_(geminiApiKey, {
-          fromEmail: fromEmail,
-          fromName: fromName,
-          subject: subject,
-          bodySnippet: bodySnippet,
-        });
-        if (aiResult) matched = aiResult;
+    // AI says it IS a ticket, or AI failed (fallback to keyword classification)
+    var matched = null;
+    if (aiResult && aiResult.ticket) {
+      matched = { name: aiResult.name, category: aiResult.category, priority: aiResult.priority };
+      Logger.log('AI TICKET: "' + subject + '" → ' + matched.category + ' (' + matched.priority + ')');
+    } else {
+      // AI failed — fall back to keyword classification
+      Logger.log('AI unavailable for "' + subject + '" — using keyword fallback');
+      matched = classifyByKeywords_(subject.toLowerCase() + ' ' + bodySnippet.toLowerCase(), SUPPORT_RULES);
+      if (!matched) {
+        matched = { name: 'general_inquiry', category: 'general', priority: 'medium' };
       }
     }
 
-    // ─── Step 8: Default — anything that survived filters becomes a ticket ───
-    if (!matched) {
-      matched = { name: isContactForm ? 'contact_form' : 'general_inquiry', category: 'general', priority: 'medium' };
-    }
-
-    // ─── Step 8: This IS a support email — create the ticket ───
+    // ─── Create the ticket ───
     thread.addLabel(supportLabel);
 
     var payload = {
@@ -263,16 +123,17 @@ function kloIngestAuto() {
   }
 }
 
-// ─── KEYWORD CLASSIFICATION ───
+// ─── KEYWORD FALLBACK (only used if Gemini is down) ───
 
-function matchesSupportKeywords_(text, rules) {
-  for (var i = 0; i < rules.length; i++) {
-    for (var k = 0; k < rules[i].keywords.length; k++) {
-      if (text.indexOf(rules[i].keywords[k]) >= 0) return true;
-    }
-  }
-  return false;
-}
+var SUPPORT_RULES = [
+  { name: 'refund', keywords: ['refund', 'money back', 'charge back', 'chargeback', 'dispute', 'cancel my order', 'cancel order', 'cancellation'], category: 'returns', priority: 'high' },
+  { name: 'shipping', keywords: ['where is my order', 'not shipped', 'lost package', 'never received', 'not delivered', 'missing package', 'missing order', 'not arrived'], category: 'shipping', priority: 'medium' },
+  { name: 'delay', keywords: ['delay', 'delayed', 'taking too long', 'still waiting', 'order status', 'when will'], category: 'order_status', priority: 'medium' },
+  { name: 'address', keywords: ['change address', 'wrong address', 'update address', 'change shipping', 'new address'], category: 'shipping', priority: 'high' },
+  { name: 'defective', keywords: ['defective', 'damaged', 'broken', 'ripped', 'torn', 'wrong item', 'wrong product', 'not as described'], category: 'damage', priority: 'high' },
+  { name: 'sizing', keywords: ['wrong size', 'too small', 'too big', 'doesn\'t fit', 'size exchange', 'size chart'], category: 'sizing', priority: 'medium' },
+  { name: 'return', keywords: ['return', 'returning', 'send back', 'return label', 'return policy', 'exchange', 'replacement'], category: 'returns', priority: 'medium' },
+];
 
 function classifyByKeywords_(text, rules) {
   // Return the FIRST matching rule (ordered by priority importance)
@@ -286,36 +147,54 @@ function classifyByKeywords_(text, rules) {
   return null;
 }
 
-// ─── AI TRIAGE (Gemini) ───
+// ─── AI CLASSIFICATION (Gemini — primary classifier) ───
 
-// Returns { category, priority } or null
+// Returns { ticket: true, name, category, priority } or { ticket: false, reason } or null on error
 function classifyWithGemini_(apiKey, email) {
   try {
     var url = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=' + encodeURIComponent(apiKey);
 
     var prompt = [
-      'You triage emails for a clothing brand (contact@kloapparel.com).',
-      'Decide if this is a REAL customer support inquiry or not.',
+      'You are the email triage system for K.Lorayne, a clothing brand.',
+      'The email inbox is contact@kloapparel.com.',
       '',
-      'ONLY create a ticket for these issues:',
-      '- refund: customer wants money back, cancellation, chargeback dispute',
-      '- shipping: shipping problem, lost package, not delivered, tracking issues',
-      '- delay: order taking too long, customer asking for status/ETA',
-      '- address: customer wants to change shipping address',
-      '- defective: damaged, broken, wrong item sent, quality issue',
-      '- sizing: wrong size, doesn\'t fit, size exchange, sizing question',
-      '- return: general return or exchange request',
+      'Your job: read this email and decide if it needs a support ticket or not.',
       '',
-      'IGNORE these (not a ticket):',
-      '- Ads, promotions, newsletters, marketing emails',
-      '- Automated Shopify/payment/shipping notifications',
-      '- Spam, social media notifications',
-      '- Internal emails, system emails',
+      'CREATE A TICKET for:',
+      '- A real customer asking about their order (status, shipping, delivery)',
+      '- A customer wanting a refund, cancellation, or chargeback dispute',
+      '- A customer reporting a damaged, defective, or wrong item',
+      '- A customer wanting to return or exchange something',
+      '- A customer asking about sizing or fit',
+      '- A customer wanting to change their shipping address',
+      '- A customer reaching out via a contact form on the website',
+      '- Any message from a real person that needs a human response',
+      '- Shopify chargeback/dispute notifications (these need action)',
+      '- Shopify refund requests from customers',
       '',
-      'Return ONLY JSON: {"ticket":true/false,"type":"refund|shipping|delay|address|defective|sizing|return","priority":"low|medium|high","reason":"..."}',
-      'If not a ticket: {"ticket":false,"reason":"..."}',
+      'DO NOT create a ticket for:',
+      '- Automated Shopify notifications (new order, order confirmed, shipping label created, payout)',
+      '- Marketing emails, newsletters, promos, ads, sale alerts',
+      '- Social media notifications (Facebook, Instagram, TikTok, etc.)',
+      '- Payment processor receipts (Stripe, PayPal, etc.)',
+      '- Shipping carrier tracking updates (USPS, FedEx, UPS, etc.)',
+      '- Review platform notifications (Judge.me, Yotpo, etc.)',
+      '- System emails (password reset, verify email, security alerts)',
+      '- Spam or irrelevant emails',
+      '- Shopify merchant support chat updates (from Shopify to the store owner)',
+      '- App install/remove notifications',
+      '- Shopify billing, invoices, or subscription emails',
       '',
-      'Email:',
+      'IMPORTANT: Emails from Shopify domains (shopify.com, shopifyemail.com) can be EITHER.',
+      'A "Contact form submission" from Shopify = TICKET (customer reaching out).',
+      'A "You have a new order #1234" from Shopify = NOT a ticket (automated notification).',
+      'Read the CONTENT, not just the sender domain.',
+      '',
+      'Return ONLY valid JSON:',
+      'If ticket: {"ticket":true,"type":"refund|shipping|delay|address|defective|sizing|return|general","priority":"low|medium|high","reason":"brief explanation"}',
+      'If NOT ticket: {"ticket":false,"reason":"brief explanation"}',
+      '',
+      'Email to classify:',
       'From: ' + (email.fromName || '') + ' <' + (email.fromEmail || '') + '>',
       'Subject: ' + (email.subject || ''),
       'Body: ' + (email.bodySnippet || ''),
@@ -331,7 +210,10 @@ function classifyWithGemini_(apiKey, email) {
       payload: JSON.stringify(req), muteHttpExceptions: true,
     });
 
-    if (resp.getResponseCode() < 200 || resp.getResponseCode() >= 300) return null;
+    if (resp.getResponseCode() < 200 || resp.getResponseCode() >= 300) {
+      Logger.log('Gemini API error: HTTP ' + resp.getResponseCode());
+      return null;
+    }
 
     var raw = JSON.parse(resp.getContentText() || '{}');
     var text = raw && raw.candidates && raw.candidates[0] && raw.candidates[0].content
@@ -340,19 +222,25 @@ function classifyWithGemini_(apiKey, email) {
     if (!text) return null;
 
     var out = JSON.parse(text);
-    if (!out || !out.ticket) return null;
+    if (!out) return null;
+
+    if (!out.ticket) {
+      return { ticket: false, reason: out.reason || 'not support' };
+    }
 
     // Map AI type to CRM category
     var typeMap = {
       refund: 'returns', shipping: 'shipping', delay: 'order_status',
-      address: 'shipping', defective: 'damage', sizing: 'sizing', return: 'returns',
+      address: 'shipping', defective: 'damage', sizing: 'sizing',
+      'return': 'returns', general: 'general',
     };
     var category = typeMap[out.type] || 'general';
     var priority = out.priority || 'medium';
     if (['low','medium','high'].indexOf(priority) < 0) priority = 'medium';
 
-    return { name: out.type || 'general', category: category, priority: priority };
+    return { ticket: true, name: out.type || 'general', category: category, priority: priority };
   } catch (e) {
+    Logger.log('Gemini classification error: ' + e.message);
     return null;
   }
 }
@@ -376,24 +264,6 @@ function extractEmail_(from) {
 function extractName_(from) {
   var m = from.match(/^\s*([^<]+)/);
   return m ? m[1].trim().replace(/^\"|\"$/g, '') : '';
-}
-
-function domainMatches_(email, domains) {
-  if (!email) return false;
-  var at = email.lastIndexOf('@');
-  var dom = at >= 0 ? email.slice(at + 1) : email;
-  for (var i = 0; i < domains.length; i++) {
-    var d = String(domains[i]).toLowerCase();
-    if (dom === d || dom.endsWith('.' + d)) return true;
-  }
-  return false;
-}
-
-function containsAny_(haystackLower, needlesLower) {
-  for (var i = 0; i < needlesLower.length; i++) {
-    if (haystackLower.indexOf(String(needlesLower[i]).toLowerCase()) >= 0) return true;
-  }
-  return false;
 }
 
 function myFunction() {
