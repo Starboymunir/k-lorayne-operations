@@ -406,8 +406,8 @@ function myFunction() {
  *   3. Then run kloIngestAuto (or wait for the trigger)
  */
 function kloBackfill() {
-  var props = PropertiesService.getScriptProperties();
-  var backfillDays = parseInt(props.getProperty('KLO_LOOKBACK_DAYS') || '14', 10);
+  // Always look back 60 days for backfill — independent of KLO_LOOKBACK_DAYS
+  var backfillDays = 60;
 
   var ignoredLabel = GmailApp.getUserLabelByName('KLO/Ignored');
   var ingestedLabel = GmailApp.getUserLabelByName('KLO/Ingested');
