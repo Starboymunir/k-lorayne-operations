@@ -38,8 +38,8 @@ function kloIngestAuto() {
 
   // ─── DOMAINS TO ALWAYS IGNORE (ads, marketing, notifications) ───
   var IGNORE_DOMAINS = [
-    // Shopify
-    'shopify.com', 'shopifyemail.com', 'email.shopify.com', 'shopify.email',
+    // Shopify — NOT blocked here. Many real customer emails come through Shopify
+    // (contact forms, forwarded messages). Shopify noise is filtered by IGNORE_SUBJECTS instead.
     // Marketing / Newsletter platforms
     'mailchimp.com', 'mandrillapp.com', 'klaviyo.com', 'sendgrid.net', 'sendgrid.com',
     'omnisend.com', 'mailgun.org', 'mailgun.com', 'constantcontact.com',
@@ -80,6 +80,12 @@ function kloIngestAuto() {
     'security alert', 'sign-in', 'login attempt',
     'invoice', 'receipt', 'statement', 'billing statement',
     'your shipment', 'tracking number', 'out for delivery', 'delivered',
+    // Shopify-specific automated notifications (noise)
+    '[shopify]', 'shopify support chat', 'your trial', 'your shopify',
+    'staff account', 'collaborator request', 'app installed', 'app removed',
+    'theme update', 'domain verified', 'dns settings',
+    'payout for', 'label purchased', 'shipping label',
+    'abandoned checkout', 'draft order',
   ];
 
   // ─── SUPPORT KEYWORDS — only emails matching these become tickets ───
