@@ -77,8 +77,23 @@ function kloIngestAuto() {
     var subjectRaw = m.getSubject() || '(no subject)';
     var subject = String(subjectRaw);
     var body = m.getPlainBody ? m.getPlainBody() : m.getBody();
-    var bodySnippet = getBodySnippet_(body, 1500);
+    var bodySnippet = getBodySnippet_(body, 5000);
     var externalId = m.getId();
+
+    // Collect full thread history — every message in the conversation
+    var threadMessages = [];
+    for (var ti = 0; ti < msgs.length; ti++) {
+      var tm = msgs[ti];
+      var tmFromRaw = tm.getFrom() || '';
+      var tmEmail = extractEmail_(tmFromRaw).toLowerCase();
+      var tmBody = tm.getPlainBody ? tm.getPlainBody() : tm.getBody();
+      threadMessages.push({
+        from: extractName_(tmFromRaw) || tmEmail,
+        fromEmail: tmEmail,
+        date: tm.getDate ? tm.getDate().toISOString() : null,
+        body: getBodySnippet_(tmBody, 5000),
+      });
+    }
 
     Logger.log('[' + (i + 1) + '/' + threads.length + '] "' + subject + '" from ' + fromEmail);
 
@@ -135,6 +150,7 @@ function kloIngestAuto() {
       createdAt: m.getDate && m.getDate() ? m.getDate().toISOString() : null,
       subject: subject,
       body: bodySnippet,
+      messages: threadMessages,
       channel: 'email',
       category: matched.category,
       priority: matched.priority,

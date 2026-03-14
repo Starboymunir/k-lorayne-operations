@@ -209,6 +209,7 @@ export function createTicket(data = {}) {
     orderName: data.orderName || null,
     seedKey: data.seedKey || null,
     channel: data.channel || 'shopify',   // shopify | email | social_fb | social_ig | social_tiktok | manual
+    messages: Array.isArray(data.messages) ? data.messages : [],
     notes: [],
     createdAt,
     updatedAt,

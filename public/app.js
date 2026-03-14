@@ -1790,7 +1790,22 @@ async function loadTicketDetail(ticketId) {
               <h2 class="section-title"><span style="color:var(--text-muted);font-weight:400">${ticket.id}</span> ${escHtml(ticket.subject)}</h2>
               <div class="sla-indicator sla-${slaClass}">${slaText}</div>
             </div>
-            ${ticket.description ? `<div style="padding:16px 20px;border-bottom:1px solid var(--border);color:var(--text-dim);font-size:13px;white-space:pre-wrap;line-height:1.6">${escHtml(ticket.description)}</div>` : ''}
+            ${ticket.messages && ticket.messages.length > 0
+              ? `<div style="padding:0;border-bottom:1px solid var(--border);">
+                  <div style="padding:12px 20px;font-size:13px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;border-bottom:1px solid var(--border);">Email Conversation (${ticket.messages.length} message${ticket.messages.length === 1 ? '' : 's'})</div>
+                  ${ticket.messages.map((msg, idx) => {
+                    const isInternal = (msg.fromEmail || '').endsWith('@kloapparel.com') || (msg.fromEmail || '').endsWith('@klorayne.com');
+                    return `<div style="padding:14px 20px;border-bottom:1px solid var(--border);background:${isInternal ? 'rgba(201,169,110,0.06)' : 'transparent'};">
+                      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+                        <strong style="font-size:13px;color:${isInternal ? 'var(--accent)' : 'var(--text)'}">${escHtml(msg.from || msg.fromEmail || 'Unknown')}</strong>
+                        <span style="font-size:11px;color:var(--text-muted)">${msg.date ? fmtDateTime(msg.date) : ''}</span>
+                      </div>
+                      <div style="font-size:13px;color:var(--text-dim);white-space:pre-wrap;line-height:1.6;max-height:300px;overflow-y:auto;">${escHtml(msg.body || '')}</div>
+                    </div>`;
+                  }).join('')}
+                </div>`
+              : (ticket.description ? `<div style="padding:16px 20px;border-bottom:1px solid var(--border);color:var(--text-dim);font-size:13px;white-space:pre-wrap;line-height:1.6">${escHtml(ticket.description)}</div>` : '')
+            }
             ${ticket.orderName ? `<div style="padding:10px 20px;border-bottom:1px solid var(--border);font-size:13px;color:var(--text-dim)">🧾 Linked Order: <strong>${escHtml(ticket.orderName)}</strong></div>` : ''}
             <div style="padding:16px 20px;border-bottom:1px solid var(--border);">
               <h3 style="font-size:13px;margin-bottom:12px;color:var(--text-muted);font-weight:700;text-transform:uppercase;letter-spacing:.05em">Activity Timeline</h3>

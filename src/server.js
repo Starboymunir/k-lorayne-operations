@@ -1972,6 +1972,7 @@ app.post('/api/inbound/tickets', requireInboundToken, (req, res) => {
       channel: body.channel || body.source || 'email',
       subject: body.subject || '(no subject)',
       description: body.description || body.body || '',
+      messages: body.messages || [],
       orderId: body.orderId || null,
       orderName: body.orderName || null,
       assignee: body.assignee,
