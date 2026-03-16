@@ -2107,6 +2107,23 @@ app.post('/api/crm/saved-replies', (req, res) => {
   try { res.status(201).json(addSavedReply(req.body)); }
   catch (err) { res.status(500).json({ error: err.message }); }
 });
+app.post('/api/crm/saved-replies/bulk', (req, res) => {
+  try {
+    const { replies } = req.body;
+    if (!Array.isArray(replies)) return res.status(400).json({ error: 'replies array required' });
+    const existing = getSavedReplies();
+    const existingTitles = new Set(existing.map(r => r.title.toLowerCase()));
+    let imported = 0;
+    for (const r of replies) {
+      if (!r.title || !r.body) continue;
+      if (existingTitles.has(r.title.toLowerCase())) continue;
+      addSavedReply({ title: r.title, body: r.body, category: r.category || 'general' });
+      existingTitles.add(r.title.toLowerCase());
+      imported++;
+    }
+    res.json({ imported, total: getSavedReplies().length });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
 app.delete('/api/crm/saved-replies/:id', (req, res) => {
   try {
     const ok = deleteSavedReply(req.params.id);

@@ -502,3 +502,73 @@ function kloBackfillContinue_() {
     Logger.log('Restored KLO_LOOKBACK_DAYS to ' + originalLookback);
   }
 }
+
+/**
+ * IMPORT GMAIL TEMPLATES — Run once to pull Gmail canned responses into the CRM.
+ *
+ * Gmail templates are stored as drafts with the "TEMPLATE" label.
+ * This reads them and POSTs them to the /api/crm/saved-replies/bulk endpoint.
+ * Duplicates (same title) are automatically skipped.
+ */
+function kloImportGmailTemplates() {
+  var props = PropertiesService.getScriptProperties();
+  var baseUrl = (props.getProperty('KLO_INBOUND_URL') || '').replace('/api/inbound/tickets', '');
+  var inboundToken = props.getProperty('KLO_INBOUND_TOKEN');
+
+  if (!baseUrl) throw new Error('Missing KLO_INBOUND_URL in script properties');
+
+  // Gmail templates are drafts with subject as the template name
+  var drafts = GmailApp.getDrafts();
+  Logger.log('Found ' + drafts.length + ' total drafts');
+
+  var templates = [];
+  for (var i = 0; i < drafts.length; i++) {
+    var msg = drafts[i].getMessage();
+    var subject = msg.getSubject() || '';
+    var body = msg.getPlainBody ? msg.getPlainBody() : msg.getBody();
+
+    // Skip drafts that look like real unsent emails (have a To address)
+    var to = msg.getTo() || '';
+    if (to && to.indexOf('@') >= 0) continue;
+
+    // Skip empty drafts
+    if (!subject && !body) continue;
+
+    templates.push({
+      title: subject || 'Untitled Template',
+      body: String(body || '').trim(),
+      category: 'general',
+    });
+  }
+
+  Logger.log('Found ' + templates.length + ' templates (drafts without recipients)');
+
+  if (templates.length === 0) {
+    Logger.log('No templates found. Gmail templates are saved as drafts without a To address.');
+    Logger.log('To create one: Gmail → Compose → type your template → three dots → Templates → Save draft as template.');
+    return;
+  }
+
+  // Bulk import to CRM
+  var url = baseUrl + '/api/crm/saved-replies/bulk';
+  var resp = UrlFetchApp.fetch(url, {
+    method: 'post',
+    contentType: 'application/json',
+    payload: JSON.stringify({ replies: templates }),
+    muteHttpExceptions: true,
+    headers: inboundToken ? { 'x-inbound-token': inboundToken } : {},
+  });
+
+  var code = resp.getResponseCode();
+  if (code >= 200 && code < 300) {
+    var result = JSON.parse(resp.getContentText());
+    Logger.log('SUCCESS: Imported ' + result.imported + ' new templates (' + result.total + ' total saved replies)');
+  } else {
+    Logger.log('FAILED: HTTP ' + code + ' — ' + resp.getContentText());
+  }
+
+  // Log what was found
+  for (var j = 0; j < templates.length; j++) {
+    Logger.log('  • "' + templates[j].title + '" (' + templates[j].body.length + ' chars)');
+  }
+}
