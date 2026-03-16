@@ -8,6 +8,7 @@ import { randomUUID } from 'node:crypto';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = join(__dirname, '..', 'data');
 const STORE_FILE = join(DATA_DIR, 'crm-store.json');
+const CUSTOM_REPLIES_FILE = join(__dirname, '..', 'config', 'custom-saved-replies.json');
 
 if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
 
@@ -80,6 +81,29 @@ function repairDuplicateTicketIds(storeObj) {
 
 // ─── LOAD / SAVE ───────────────────────────────
 
+function loadCustomReplies() {
+  try {
+    if (existsSync(CUSTOM_REPLIES_FILE)) {
+      return JSON.parse(readFileSync(CUSTOM_REPLIES_FILE, 'utf-8'));
+    }
+  } catch (e) { /* ignore */ }
+  return [];
+}
+
+function mergeCustomReplies(existing) {
+  const custom = loadCustomReplies();
+  if (!custom.length) return existing;
+  const titles = new Set(existing.map(r => r.title.toLowerCase()));
+  const merged = [...existing];
+  for (const r of custom) {
+    if (r.title && !titles.has(r.title.toLowerCase())) {
+      merged.push(r);
+      titles.add(r.title.toLowerCase());
+    }
+  }
+  return merged;
+}
+
 function load() {
   try {
     if (existsSync(STORE_FILE)) {
@@ -90,7 +114,7 @@ function load() {
         ...parsed,
         activityLog: parsed.activityLog || [],
         categories: parsed.categories || DEFAULT_STORE.categories,
-        savedReplies: parsed.savedReplies || DEFAULT_STORE.savedReplies,
+        savedReplies: mergeCustomReplies(parsed.savedReplies || DEFAULT_STORE.savedReplies),
         settings: { ...DEFAULT_STORE.settings, ...parsed.settings },
       };
       const changed = repairDuplicateTicketIds(hydrated);
@@ -115,7 +139,9 @@ function load() {
   } catch (err) {
     console.error('[crm-store] Load error, using defaults:', err.message);
   }
-  return structuredClone(DEFAULT_STORE);
+  const fresh = structuredClone(DEFAULT_STORE);
+  fresh.savedReplies = mergeCustomReplies(fresh.savedReplies);
+  return fresh;
 }
 
 function save(store) {
@@ -326,6 +352,10 @@ export function deleteSavedReply(id) {
   store.savedReplies.splice(idx, 1);
   save(store);
   return true;
+}
+
+export function saveCustomReplies(replies) {
+  writeFileSync(CUSTOM_REPLIES_FILE, JSON.stringify(replies, null, 2), 'utf-8');
 }
 
 // ─── CATEGORIES ────────────────────────────────

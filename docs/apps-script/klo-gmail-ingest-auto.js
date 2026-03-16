@@ -506,9 +506,11 @@ function kloBackfillContinue_() {
 /**
  * IMPORT GMAIL TEMPLATES — Run once to pull Gmail canned responses into the CRM.
  *
- * Gmail templates are stored as drafts with the "TEMPLATE" label.
- * This reads them and POSTs them to the /api/crm/saved-replies/bulk endpoint.
- * Duplicates (same title) are automatically skipped.
+ * Tries two methods to find templates:
+ *   1. Search for drafts with Gmail's TEMPLATE label
+ *   2. Fall back to ALL drafts (logs each one for debugging)
+ *
+ * Duplicates (same title) are automatically skipped server-side.
  */
 function kloImportGmailTemplates() {
   var props = PropertiesService.getScriptProperties();
@@ -517,40 +519,67 @@ function kloImportGmailTemplates() {
 
   if (!baseUrl) throw new Error('Missing KLO_INBOUND_URL in script properties');
 
-  // Gmail templates are drafts with subject as the template name
-  var drafts = GmailApp.getDrafts();
-  Logger.log('Found ' + drafts.length + ' total drafts');
-
   var templates = [];
+  var seen = {}; // dedup by subject
+
+  // ─── Method 1: Gmail TEMPLATE label search ───
+  try {
+    var templateThreads = GmailApp.search('label:TEMPLATE', 0, 100);
+    Logger.log('Method 1 — label:TEMPLATE search found ' + templateThreads.length + ' threads');
+    for (var t = 0; t < templateThreads.length; t++) {
+      var msgs = templateThreads[t].getMessages();
+      if (!msgs || msgs.length === 0) continue;
+      var msg = msgs[0];
+      var subject = msg.getSubject() || '';
+      var body = msg.getPlainBody ? msg.getPlainBody() : msg.getBody();
+      if (!subject && !body) continue;
+      var key = subject.toLowerCase();
+      if (seen[key]) continue;
+      seen[key] = true;
+      templates.push({ title: subject || 'Untitled Template', body: String(body || '').trim(), category: 'general' });
+      Logger.log('  TEMPLATE: "' + subject + '" (' + String(body || '').length + ' chars)');
+    }
+  } catch (e) {
+    Logger.log('Method 1 failed (label:TEMPLATE not available): ' + e.message);
+  }
+
+  // ─── Method 2: All drafts — include everything (skip only empty) ───
+  var drafts = GmailApp.getDrafts();
+  Logger.log('Method 2 — scanning ' + drafts.length + ' drafts');
+  var draftTemplates = 0;
   for (var i = 0; i < drafts.length; i++) {
     var msg = drafts[i].getMessage();
     var subject = msg.getSubject() || '';
     var body = msg.getPlainBody ? msg.getPlainBody() : msg.getBody();
-
-    // Skip drafts that look like real unsent emails (have a To address)
     var to = msg.getTo() || '';
-    if (to && to.indexOf('@') >= 0) continue;
+
+    Logger.log('  Draft ' + (i + 1) + ': "' + subject + '" | To: ' + (to || '(none)') + ' | Body: ' + String(body || '').length + ' chars');
 
     // Skip empty drafts
-    if (!subject && !body) continue;
+    if (!subject && !body) { Logger.log('    → skipped (empty)'); continue; }
 
-    templates.push({
-      title: subject || 'Untitled Template',
-      body: String(body || '').trim(),
-      category: 'general',
-    });
+    var key = subject.toLowerCase();
+    if (seen[key]) { Logger.log('    → skipped (already found via Method 1)'); continue; }
+    seen[key] = true;
+
+    templates.push({ title: subject || 'Untitled Template', body: String(body || '').trim(), category: 'general' });
+    draftTemplates++;
+    Logger.log('    → ADDED as template');
   }
+  Logger.log('Method 2 added ' + draftTemplates + ' drafts as templates');
 
-  Logger.log('Found ' + templates.length + ' templates (drafts without recipients)');
+  Logger.log('TOTAL templates found: ' + templates.length);
 
   if (templates.length === 0) {
-    Logger.log('No templates found. Gmail templates are saved as drafts without a To address.');
-    Logger.log('To create one: Gmail → Compose → type your template → three dots → Templates → Save draft as template.');
+    Logger.log('No templates found in Gmail.');
+    Logger.log('Option A: Gmail → Compose → type template → three dots → Templates → Save draft as template, then re-run.');
+    Logger.log('Option B: Go to your CRM app → Settings → Saved Reply Templates → + Add Reply to add them manually.');
     return;
   }
 
   // Bulk import to CRM
   var url = baseUrl + '/api/crm/saved-replies/bulk';
+  Logger.log('POSTing ' + templates.length + ' templates to ' + url);
   var resp = UrlFetchApp.fetch(url, {
     method: 'post',
     contentType: 'application/json',
@@ -562,13 +591,8 @@ function kloImportGmailTemplates() {
   var code = resp.getResponseCode();
   if (code >= 200 && code < 300) {
     var result = JSON.parse(resp.getContentText());
-    Logger.log('SUCCESS: Imported ' + result.imported + ' new templates (' + result.total + ' total saved replies)');
+    Logger.log('SUCCESS: Imported ' + result.imported + ' new templates (' + result.total + ' total saved replies in CRM)');
   } else {
     Logger.log('FAILED: HTTP ' + code + ' — ' + resp.getContentText());
-  }
-
-  // Log what was found
-  for (var j = 0; j < templates.length; j++) {
-    Logger.log('  • "' + templates[j].title + '" (' + templates[j].body.length + ' chars)');
   }
 }

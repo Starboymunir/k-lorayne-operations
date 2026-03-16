@@ -10,7 +10,7 @@ import {
   addTicketNote, deleteTicket,
   getCustomerNotes, addCustomerNote,
   getCustomerTags, setCustomerTags,
-  getSavedReplies, addSavedReply, deleteSavedReply,
+  getSavedReplies, addSavedReply, deleteSavedReply, saveCustomReplies,
   getCategories, addCategory, updateCategory, deleteCategory,
   getCrmStats,
   getSettings, updateSettings,
@@ -2114,12 +2114,18 @@ app.post('/api/crm/saved-replies/bulk', (req, res) => {
     const existing = getSavedReplies();
     const existingTitles = new Set(existing.map(r => r.title.toLowerCase()));
     let imported = 0;
+    const newCustom = [];
     for (const r of replies) {
       if (!r.title || !r.body) continue;
       if (existingTitles.has(r.title.toLowerCase())) continue;
-      addSavedReply({ title: r.title, body: r.body, category: r.category || 'general' });
+      const entry = addSavedReply({ title: r.title, body: r.body, category: r.category || 'general' });
+      newCustom.push(entry);
       existingTitles.add(r.title.toLowerCase());
       imported++;
+    }
+    // Persist imported replies to config file so they survive deploys
+    if (newCustom.length) {
+      try { saveCustomReplies(getSavedReplies().filter(r => !r.id.match(/^sr-[1-6]$/))); } catch (e) { /* non-critical */ }
     }
     res.json({ imported, total: getSavedReplies().length });
   } catch (err) { res.status(500).json({ error: err.message }); }
