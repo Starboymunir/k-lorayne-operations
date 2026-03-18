@@ -893,7 +893,28 @@ app.get('/api/dashboard', async (req, res) => {
     const reorder = analysis.variants.filter(v => v.priority === 'REORDER');
     const totalValue = analysis.variants.reduce((s, v) => s + (v.available * v.price), 0);
     const totalUnits = analysis.variants.reduce((s, v) => s + v.available, 0);
-    const revenue = orders.reduce((s, o) => s + parseFloat(o.totalPriceSet?.shopMoney?.amount || 0), 0);
+
+    // Revenue period filter (today, yesterday, 7, 14, 30, or all)
+    const revPeriod = req.query.revPeriod || '30';
+    const now = new Date();
+    let revStart;
+    if (revPeriod === 'today') {
+      revStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    } else if (revPeriod === 'yesterday') {
+      revStart = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
+    } else {
+      const days = parseInt(revPeriod, 10) || 30;
+      revStart = new Date(Date.now() - days * 86400000);
+    }
+    const revEnd = revPeriod === 'yesterday'
+      ? new Date(now.getFullYear(), now.getMonth(), now.getDate())
+      : now;
+    const periodOrders = orders.filter(o => {
+      const d = new Date(o.createdAt);
+      return d >= revStart && d <= revEnd;
+    });
+    const revenue = periodOrders.reduce((s, o) => s + parseFloat(o.totalPriceSet?.shopMoney?.amount || 0), 0);
+    const periodOrderCount = periodOrders.length;
 
     const velocityCounts = { 'FAST MOVER': 0, 'REGULAR': 0, 'SLOW MOVER': 0, 'NO SALES': 0 };
     analysis.variants.forEach(v => velocityCounts[v.velocityClass]++);
@@ -901,9 +922,10 @@ app.get('/api/dashboard', async (req, res) => {
     const tierCounts = { VIP: 0, LOYAL: 0, REPEAT: 0, CUSTOMER: 0, NEW: 0 };
     enriched.forEach(c => tierCounts[c.tier]++);
 
-    // Revenue trend (last 30 days)
+    // Revenue trend — matches selected period (up to 30 bars max)
+    const chartDays = revPeriod === 'today' ? 1 : revPeriod === 'yesterday' ? 1 : Math.min(parseInt(revPeriod, 10) || 30, 30);
     const revByDay = {};
-    for (let i = 29; i >= 0; i--) {
+    for (let i = chartDays - 1; i >= 0; i--) {
       const d = new Date(Date.now() - i * 86400000).toISOString().split('T')[0];
       revByDay[d] = 0;
     }
@@ -937,6 +959,7 @@ app.get('/api/dashboard', async (req, res) => {
       totalOrders: orders.length,
       totalCustomers: customers.length,
       daysCovered: analysis.daysCovered, revenue: revenue.toFixed(2),
+      revPeriod, periodOrderCount,
       totalInventoryValue: totalValue.toFixed(2),
       totalUnitsOnHand: totalUnits,
       alerts: { critical: critical.length, urgent: urgent.length, reorder: reorder.length },
@@ -2046,6 +2069,24 @@ app.delete('/api/tickets/bulk/:channel', (req, res) => {
     }
     logActivity('System', 'bulk_delete', `Bulk-deleted ${count} ${channel} tickets`);
     res.json({ success: true, deleted: count });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Bulk update ticket status/priority/category
+app.patch('/api/tickets/bulk', (req, res) => {
+  try {
+    const { ids, updates } = req.body;
+    if (!Array.isArray(ids) || !ids.length) return res.status(400).json({ error: 'ids array required' });
+    const allowed = {};
+    if (updates.status) allowed.status = updates.status;
+    if (updates.priority) allowed.priority = updates.priority;
+    if (updates.category) allowed.category = updates.category;
+    let count = 0;
+    for (const id of ids) {
+      if (updateTicket(id, allowed)) count++;
+    }
+    logActivity('Krystle', 'bulk_update', `Bulk-updated ${count} tickets to ${JSON.stringify(allowed)}`);
+    res.json({ success: true, updated: count });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 

@@ -310,9 +310,20 @@ $('#globalSearch').addEventListener('blur', () => setTimeout(() => $('#searchRes
     const d = await r.json();
     const badge = $('#ticketBadge');
     if (badge && d.total > 0) { badge.textContent = d.total; badge.classList.add('show'); }
+    else if (badge) { badge.textContent = ''; badge.classList.remove('show'); }
   } catch {}
   navigateTo('dashboard');
 })();
+
+async function refreshTicketBadge() {
+  try {
+    const r = await fetch('/api/tickets?status=open&status=in_progress');
+    const d = await r.json();
+    const badge = $('#ticketBadge');
+    if (badge && d.total > 0) { badge.textContent = d.total; badge.classList.add('show'); }
+    else if (badge) { badge.textContent = ''; badge.classList.remove('show'); }
+  } catch {}
+}
 
 // ════════════════════════════════════════════════
 //  DASHBOARD
@@ -320,8 +331,9 @@ $('#globalSearch').addEventListener('blur', () => setTimeout(() => $('#searchRes
 
 async function loadDashboard() {
   try {
+    const revPeriod = window._dashRevPeriod || '30';
     const [dRes, gRes, statusRes] = await Promise.all([
-      fetch('/api/dashboard'), getGlossary(), fetch('/api/status'),
+      fetch('/api/dashboard?revPeriod=' + encodeURIComponent(revPeriod)), getGlossary(), fetch('/api/status'),
     ]);
     const d = await dRes.json();
     const g = gRes;
@@ -348,6 +360,10 @@ async function loadDashboard() {
       ? `<div class="loading-bar" id="loadingBar"><div class="spinner-sm"></div><span class="loading-bar-text">Loading customers... (<span class="loading-bar-count">${status.customerCount}</span> so far)</span></div>`
       : '';
 
+    const revPeriodLabels = { today: 'Today', yesterday: 'Yesterday', '7': '7 Days', '14': '14 Days', '30': '30 Days' };
+    const curRevPeriod = d.revPeriod || '30';
+    const revPeriodLabel = revPeriodLabels[curRevPeriod] || curRevPeriod + 'd';
+
     $('#content').innerHTML = `
       ${loadingBar}
       <div class="kpi-grid">
@@ -355,7 +371,13 @@ async function loadDashboard() {
           <div class="kpi-icon" style="background:var(--green-soft);color:var(--green)">$</div>
           <div class="kpi-data">
             <div class="kpi-value">${fmtMoney(d.revenue)}</div>
-            <div class="kpi-label">Revenue (${d.daysCovered}d)</div>
+            <div style="display:flex;align-items:center;gap:6px;">
+              <div class="kpi-label">Revenue</div>
+              <select id="revPeriodSelect" style="font-size:11px;padding:2px 4px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);cursor:pointer;">
+                ${Object.entries(revPeriodLabels).map(([v, l]) => `<option value="${v}" ${v === curRevPeriod ? 'selected' : ''}>${l}</option>`).join('')}
+              </select>
+            </div>
+            <div style="font-size:11px;color:var(--text-muted);margin-top:2px;">${d.periodOrderCount} order${d.periodOrderCount !== 1 ? 's' : ''}</div>
           </div>
         </div>
         <div class="kpi-card clickable" onclick="navigateTo('orders')">
@@ -399,7 +421,7 @@ async function loadDashboard() {
         <div class="dash-col-main">
           <div class="section">
             <div class="section-header">
-              <h2 class="section-title">Revenue Trend (30 Days)</h2>
+              <h2 class="section-title">Revenue Trend (${revPeriodLabel})</h2>
             </div>
             <div class="rev-chart">${revBars}</div>
           </div>
@@ -490,6 +512,15 @@ async function loadDashboard() {
       </div>
     `;
     if (loadingBar) startStatusPolling();
+
+    // Revenue period selector
+    const revSelect = document.getElementById('revPeriodSelect');
+    if (revSelect) {
+      revSelect.addEventListener('change', () => {
+        window._dashRevPeriod = revSelect.value;
+        loadDashboard();
+      });
+    }
   } catch (err) {
     $('#content').innerHTML = `<div class="empty-state"><h3>Error loading dashboard</h3><p>${escHtml(err.message)}</p></div>`;
   }
@@ -1522,6 +1553,18 @@ async function loadTickets() {
     _categories = cData.categories || [];
 
     let filterStatus = 'active', filterCategory = '', searchTerm = '', channelTab = 'shopify';
+    let selectedIds = new Set();
+
+    function updateBulkBar() {
+      const bar = document.getElementById('bulkActionBar');
+      if (!bar) return;
+      const cnt = selectedIds.size;
+      bar.style.display = cnt > 0 ? 'flex' : 'none';
+      const cntEl = document.getElementById('bulkSelectedCount');
+      if (cntEl) cntEl.textContent = cnt + ' selected';
+      const allCb = document.getElementById('selectAllCb');
+      if (allCb) allCb.checked = cnt > 0 && cnt === $$('.bulk-cb').length;
+    }
 
     function getFiltered() {
       let tickets = tData.tickets;
@@ -1567,6 +1610,7 @@ async function loadTickets() {
       list.innerHTML = visible.map(t => `
         <div class="ticket-card" onclick="navigateTo('ticket-detail', '${t.id}')">
           <div class="ticket-card-top">
+            <input type="checkbox" class="bulk-cb" data-tid="${t.id}" ${selectedIds.has(t.id) ? 'checked' : ''} onclick="event.stopPropagation()">
             <span class="ticket-id">${t.id}</span>
             ${channelBadge(t.channel || 'shopify')}
             ${statusBadge(t.status)} ${ticketPriorityBadge(t.priority)}
@@ -1582,6 +1626,15 @@ async function loadTickets() {
           </div>
         </div>
       `).join('');
+
+      // Wire bulk-edit checkboxes
+      $$('.bulk-cb').forEach(cb => cb.addEventListener('change', () => {
+        if (cb.checked) selectedIds.add(cb.dataset.tid); else selectedIds.delete(cb.dataset.tid);
+        updateBulkBar();
+      }));
+
+      // Store visible ticket IDs for next/prev navigation
+      window._ticketNavList = visible.map(t => t.id);
     }
 
     const sc = { open: 0, in_progress: 0, waiting: 0, resolved: 0, closed: 0 };
@@ -1617,6 +1670,20 @@ async function loadTickets() {
           <button class="channel-tab active" data-chtab="shopify">🛍 Shopify Orders <span class="channel-tab-count" id="shopifyTabCount">0</span></button>
           <button class="channel-tab" data-chtab="email">📧 Email Tickets <span class="channel-tab-count" id="emailTabCount">0</span></button>
         </div>
+        <div id="bulkActionBar" style="display:none;align-items:center;gap:12px;padding:10px 16px;background:var(--accent-soft);border-radius:10px;margin-bottom:8px;flex-wrap:wrap">
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px;font-weight:600"><input type="checkbox" id="selectAllCb"> Select All</label>
+          <span id="bulkSelectedCount" style="font-size:13px;color:var(--text-muted)">0 selected</span>
+          <select id="bulkStatusSelect" class="form-input" style="width:auto;font-size:13px">
+            <option value="">Change status to…</option>
+            <option value="closed">Closed</option>
+            <option value="resolved">Resolved</option>
+            <option value="open">Open</option>
+            <option value="in_progress">In Progress</option>
+            <option value="waiting">Waiting on Customer</option>
+          </select>
+          <button class="btn btn-primary btn-sm" id="bulkApplyBtn">Apply</button>
+          <button class="btn btn-sm" id="bulkCancelBtn">Clear Selection</button>
+        </div>
         <div id="ticketList" class="ticket-list"></div>
       </div>
     `;
@@ -1635,6 +1702,32 @@ async function loadTickets() {
       el.classList.add('active'); filterCategory = el.dataset.catf; render();
     }));
     $('#newTicketBtn').addEventListener('click', () => showNewTicketModal());
+
+    // Bulk edit events
+    $('#selectAllCb').addEventListener('change', e => {
+      $$('.bulk-cb').forEach(cb => { cb.checked = e.target.checked; if (e.target.checked) selectedIds.add(cb.dataset.tid); else selectedIds.delete(cb.dataset.tid); });
+      updateBulkBar();
+    });
+    $('#bulkApplyBtn').addEventListener('click', async () => {
+      const status = $('#bulkStatusSelect').value;
+      if (!status) { toast('Select a status first', 'error'); return; }
+      if (!selectedIds.size) return;
+      if (!confirm(`Change ${selectedIds.size} ticket(s) to "${status.replace('_', ' ')}"?`)) return;
+      try {
+        const r = await fetch('/api/tickets/bulk', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids: [...selectedIds], updates: { status } }) });
+        const result = await r.json();
+        selectedIds.clear();
+        toast(`${result.updated} tickets updated`, 'success');
+        refreshTicketBadge();
+        loadTickets();
+      } catch (err) { toast('Bulk update failed', 'error'); }
+    });
+    $('#bulkCancelBtn').addEventListener('click', () => {
+      selectedIds.clear();
+      $$('.bulk-cb').forEach(cb => cb.checked = false);
+      updateBulkBar();
+    });
+
     render();
 
     let _refreshInFlight = false;
@@ -1762,6 +1855,13 @@ async function loadTicketDetail(ticketId) {
     const slaClass = ticket.firstResponseAt ? 'ok' : slaRemaining < 0 ? 'critical' : slaRemaining < 4 ? 'urgent' : 'ok';
     const slaText = ticket.firstResponseAt ? 'Responded' : slaRemaining < 0 ? `SLA BREACHED (${Math.abs(Math.round(slaRemaining))}h overdue)` : `${Math.round(slaRemaining)}h remaining`;
 
+    // Determine prev/next tickets from the list view
+    const navList = window._ticketNavList || [];
+    const navIdx = navList.indexOf(ticketId);
+    const prevId = navIdx > 0 ? navList[navIdx - 1] : null;
+    const nextId = navIdx >= 0 && navIdx < navList.length - 1 ? navList[navIdx + 1] : null;
+    const navPos = navIdx >= 0 ? `${navIdx + 1} of ${navList.length}` : '';
+
     function renderTimeline() {
       const tl = document.getElementById('ticketTimeline');
       if (!tl) return;
@@ -1781,7 +1881,12 @@ async function loadTicketDetail(ticketId) {
     }
 
     $('#content').innerHTML = `
-      <div style="margin-bottom:16px"><button class="btn btn-sm" onclick="navigateTo('tickets')">← Back to Tickets</button></div>
+      <div style="margin-bottom:16px;display:flex;align-items:center;gap:8px">
+        <button class="btn btn-sm" onclick="navigateTo('tickets')">← Back to Tickets</button>
+        ${navPos ? `<span style="font-size:12px;color:var(--text-muted);margin-left:auto">${navPos}</span>` : ''}
+        ${prevId ? `<button class="btn btn-sm" onclick="navigateTo('ticket-detail','${prevId}')">← Prev</button>` : ''}
+        ${nextId ? `<button class="btn btn-sm" onclick="navigateTo('ticket-detail','${nextId}')">Next →</button>` : ''}
+      </div>
 
       <div class="ticket-detail-grid">
         <div class="ticket-main">
@@ -1901,6 +2006,7 @@ async function loadTicketDetail(ticketId) {
     $('#updateTicketBtn').addEventListener('click', async () => {
       await fetch(`/api/tickets/${ticketId}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: $('#statusSelect').value, priority: $('#prioritySelect').value, category: $('#categorySelect').value }) });
       toast('Ticket updated', 'success');
+      refreshTicketBadge();
       navigateTo('ticket-detail', ticketId);
     });
 
