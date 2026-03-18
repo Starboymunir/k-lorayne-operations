@@ -1661,7 +1661,7 @@ async function loadTickets() {
         <div class="kpi-card mini clickable" data-tfilter="all"><div class="kpi-value" style="font-size:20px"><span id="kpiAll">${tData.total}</span></div><div class="kpi-label">All Time</div></div>
       </div>
 
-      <div id="bulkActionBar" style="display:none;align-items:center;gap:12px;padding:10px 16px;background:var(--card-bg,var(--sidebar-bg));border:1px solid var(--border);border-radius:10px;margin-bottom:8px;flex-wrap:wrap;position:sticky;top:64px;z-index:50;box-shadow:0 2px 8px rgba(0,0,0,.15)">
+      <div id="bulkActionBar" style="display:none;align-items:center;gap:12px;padding:10px 16px;background:#fff;border:1px solid var(--border);border-radius:10px;margin-bottom:8px;flex-wrap:wrap;position:sticky;top:64px;z-index:50;box-shadow:0 2px 8px rgba(0,0,0,.15)">
           <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px;font-weight:600"><input type="checkbox" id="selectAllCb"> Select All</label>
           <span id="bulkSelectedCount" style="font-size:13px;color:var(--text-muted)">0 selected</span>
           <select id="bulkStatusSelect" class="form-input" style="width:auto;font-size:13px">
