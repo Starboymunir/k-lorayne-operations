@@ -2040,6 +2040,24 @@ app.post('/api/tickets', (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// Bulk update ticket status/priority/category — MUST be before :id route
+app.patch('/api/tickets/bulk', (req, res) => {
+  try {
+    const { ids, updates } = req.body;
+    if (!Array.isArray(ids) || !ids.length) return res.status(400).json({ error: 'ids array required' });
+    const allowed = {};
+    if (updates.status) allowed.status = updates.status;
+    if (updates.priority) allowed.priority = updates.priority;
+    if (updates.category) allowed.category = updates.category;
+    let count = 0;
+    for (const id of ids) {
+      if (updateTicket(id, allowed)) count++;
+    }
+    logActivity('Krystle', 'bulk_update', `Bulk-updated ${count} tickets to ${JSON.stringify(allowed)}`);
+    res.json({ success: true, updated: count });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 app.patch('/api/tickets/:id', (req, res) => {
   try {
     const ticket = updateTicket(req.params.id, req.body);
@@ -2069,24 +2087,6 @@ app.delete('/api/tickets/bulk/:channel', (req, res) => {
     }
     logActivity('System', 'bulk_delete', `Bulk-deleted ${count} ${channel} tickets`);
     res.json({ success: true, deleted: count });
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-// Bulk update ticket status/priority/category
-app.patch('/api/tickets/bulk', (req, res) => {
-  try {
-    const { ids, updates } = req.body;
-    if (!Array.isArray(ids) || !ids.length) return res.status(400).json({ error: 'ids array required' });
-    const allowed = {};
-    if (updates.status) allowed.status = updates.status;
-    if (updates.priority) allowed.priority = updates.priority;
-    if (updates.category) allowed.category = updates.category;
-    let count = 0;
-    for (const id of ids) {
-      if (updateTicket(id, allowed)) count++;
-    }
-    logActivity('Krystle', 'bulk_update', `Bulk-updated ${count} tickets to ${JSON.stringify(allowed)}`);
-    res.json({ success: true, updated: count });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 

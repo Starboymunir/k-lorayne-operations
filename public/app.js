@@ -373,9 +373,9 @@ async function loadDashboard() {
             <div class="kpi-value">${fmtMoney(d.revenue)}</div>
             <div style="display:flex;align-items:center;gap:6px;">
               <div class="kpi-label">Revenue</div>
-              <select id="revPeriodSelect" style="font-size:11px;padding:2px 4px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);cursor:pointer;">
-                ${Object.entries(revPeriodLabels).map(([v, l]) => `<option value="${v}" ${v === curRevPeriod ? 'selected' : ''}>${l}</option>`).join('')}
-              </select>
+              <div class="rev-period-pills" style="display:inline-flex;gap:2px;background:var(--bg-elevated,var(--sidebar-bg));border-radius:8px;padding:2px;border:1px solid var(--border);">
+                ${Object.entries(revPeriodLabels).map(([v, l]) => `<button class="rev-pill${v === curRevPeriod ? ' active' : ''}" data-revp="${v}" style="padding:3px 10px;font-size:11px;font-weight:600;border:none;border-radius:6px;cursor:pointer;background:${v === curRevPeriod ? 'var(--accent)' : 'transparent'};color:${v === curRevPeriod ? '#fff' : 'var(--text-muted)'};transition:all .15s ease;">${l}</button>`).join('')}
+              </div>
             </div>
             <div style="font-size:11px;color:var(--text-muted);margin-top:2px;">${d.periodOrderCount} order${d.periodOrderCount !== 1 ? 's' : ''}</div>
           </div>
@@ -514,13 +514,10 @@ async function loadDashboard() {
     if (loadingBar) startStatusPolling();
 
     // Revenue period selector
-    const revSelect = document.getElementById('revPeriodSelect');
-    if (revSelect) {
-      revSelect.addEventListener('change', () => {
-        window._dashRevPeriod = revSelect.value;
-        loadDashboard();
-      });
-    }
+    $$('[data-revp]').forEach(btn => btn.addEventListener('click', () => {
+      window._dashRevPeriod = btn.dataset.revp;
+      loadDashboard();
+    }));
   } catch (err) {
     $('#content').innerHTML = `<div class="empty-state"><h3>Error loading dashboard</h3><p>${escHtml(err.message)}</p></div>`;
   }
@@ -1335,6 +1332,15 @@ async function loadCustomers() {
     const tierTips = { VIP: g?.tiers?.VIP?.description, LOYAL: g?.tiers?.LOYAL?.description, REPEAT: g?.tiers?.REPEAT?.description, CUSTOMER: g?.tiers?.CUSTOMER?.description, NEW: g?.tiers?.NEW?.description };
 
     $('#content').innerHTML = `
+      <div style="padding:12px 16px;background:var(--accent-soft);border-radius:10px;margin-bottom:16px;font-size:13px;color:var(--text-dim);line-height:1.6">
+        <strong style="color:var(--accent)">Customer Tier Criteria:</strong>
+        <span style="margin-left:8px">🏆 <strong>VIP</strong> = $500+ spent <em>or</em> 10+ orders</span>
+        <span style="margin-left:12px">💎 <strong>Loyal</strong> = $200+ spent <em>or</em> 5+ orders</span>
+        <span style="margin-left:12px">🔁 <strong>Repeat</strong> = 2+ orders</span>
+        <span style="margin-left:12px">👤 <strong>1-Time</strong> = 1 order</span>
+        <span style="margin-left:12px">🆕 <strong>New</strong> = 0 orders</span>
+        <span style="margin-left:12px">⚠️ <strong>At Risk</strong> = 120+ days since last order</span>
+      </div>
       <div class="kpi-grid">
         ${Object.entries(initData.tierCounts).map(([tier, count]) => {
           const c = tierColors[tier] || '--text-dim';
@@ -1552,7 +1558,7 @@ async function loadTickets() {
     const cData = await cRes.json();
     _categories = cData.categories || [];
 
-    let filterStatus = 'active', filterCategory = '', searchTerm = '', channelTab = 'shopify';
+    let filterStatus = 'active', filterCategory = '', searchTerm = '', channelTab = window._ticketChannelTab || 'shopify';
     let selectedIds = new Set();
 
     function updateBulkBar() {
@@ -1667,10 +1673,10 @@ async function loadTickets() {
           }).join('')}
         </div>
         <div class="channel-tabs" id="channelTabs">
-          <button class="channel-tab active" data-chtab="shopify">🛍 Shopify Orders <span class="channel-tab-count" id="shopifyTabCount">0</span></button>
-          <button class="channel-tab" data-chtab="email">📧 Email Tickets <span class="channel-tab-count" id="emailTabCount">0</span></button>
+          <button class="channel-tab ${channelTab === 'shopify' ? 'active' : ''}" data-chtab="shopify">🛍 Shopify Orders <span class="channel-tab-count" id="shopifyTabCount">0</span></button>
+          <button class="channel-tab ${channelTab === 'email' ? 'active' : ''}" data-chtab="email">📧 Email Tickets <span class="channel-tab-count" id="emailTabCount">0</span></button>
         </div>
-        <div id="bulkActionBar" style="display:none;align-items:center;gap:12px;padding:10px 16px;background:var(--accent-soft);border-radius:10px;margin-bottom:8px;flex-wrap:wrap">
+        <div id="bulkActionBar" style="display:none;align-items:center;gap:12px;padding:10px 16px;background:var(--accent-soft);border-radius:10px;margin-bottom:8px;flex-wrap:wrap;position:sticky;top:0;z-index:50">
           <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px;font-weight:600"><input type="checkbox" id="selectAllCb"> Select All</label>
           <span id="bulkSelectedCount" style="font-size:13px;color:var(--text-muted)">0 selected</span>
           <select id="bulkStatusSelect" class="form-input" style="width:auto;font-size:13px">
@@ -1690,7 +1696,7 @@ async function loadTickets() {
 
     $$('[data-chtab]').forEach(el => el.addEventListener('click', () => {
       $$('[data-chtab]').forEach(e2 => e2.classList.remove('active'));
-      el.classList.add('active'); channelTab = el.dataset.chtab; render();
+      el.classList.add('active'); channelTab = el.dataset.chtab; window._ticketChannelTab = channelTab; render();
     }));
     $('#ticketSearch').addEventListener('input', e => { searchTerm = e.target.value; render(); });
     $$('[data-tfilter]').forEach(el => el.addEventListener('click', () => {
