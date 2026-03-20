@@ -497,6 +497,15 @@ th {
   user-select: none;
 }
 th:hover { color: var(--text-dim); }
+th[data-alertsort]:hover, th[data-arsort]:hover, th[data-fcsort]:hover,
+th[data-replsort]:hover { background: var(--bg); }
+th .sort-badge {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 20px; height: 20px; border-radius: 4px; margin-left: 4px;
+  font-size: 12px; vertical-align: middle; line-height: 1;
+}
+th .sort-badge.inactive { background: var(--bg); color: var(--text-muted); opacity: .5; }
+th .sort-badge.active { background: var(--accent); color: #fff; opacity: 1; font-weight: 700; }
 
 td {
   padding: 10px 16px;

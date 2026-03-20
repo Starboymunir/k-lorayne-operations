@@ -778,8 +778,8 @@ async function loadReplenishment() {
     let filterP = 'ALL', searchT = '';
     let replSortCol = null, replSortDir = 1;
     function replSortInd(col) {
-      if (col !== replSortCol) return ' <span style="opacity:.3">⇅</span>';
-      return replSortDir === 1 ? ' ▲' : ' ▼';
+      if (col !== replSortCol) return '<span class="sort-badge inactive">⇅</span>';
+      return '<span class="sort-badge active">' + (replSortDir === 1 ? '▲' : '▼') + '</span>';
     }
 
     function render() {
@@ -842,8 +842,8 @@ async function loadReplenishment() {
       if (replSortCol === c) replSortDir *= -1; else { replSortCol = c; replSortDir = 1; }
       $$('[data-replsort]').forEach(h => {
         const col = h.dataset.replsort;
-        const base = h.textContent.replace(/\s*[▲▼⇅]\s*$/, '');
-        h.innerHTML = base + (col === replSortCol ? (replSortDir === 1 ? ' ▲' : ' ▼') : ' <span style="opacity:.3">⇅</span>');
+        const badge = h.querySelector('.sort-badge');
+        if (badge) { badge.className = 'sort-badge ' + (col === replSortCol ? 'active' : 'inactive'); badge.textContent = col === replSortCol ? (replSortDir === 1 ? '▲' : '▼') : '⇅'; }
       });
       render();
     }));
@@ -876,8 +876,8 @@ async function loadForecast() {
     let arSortCol = 'daysOfStock', arSortDir = 1; // at-risk table sort
 
     function arSortInd(col) {
-      if (col !== arSortCol) return ' <span style="opacity:.3">⇅</span>';
-      return arSortDir === 1 ? ' ▲' : ' ▼';
+      if (col !== arSortCol) return '<span class="sort-badge inactive">⇅</span>';
+      return '<span class="sort-badge active">' + (arSortDir === 1 ? '▲' : '▼') + '</span>';
     }
 
     // Mini sparkline builder (12 weeks of data)
@@ -1129,14 +1129,14 @@ async function loadForecast() {
         <div class="section">
           <div class="section-header"><h2 class="section-title">All Products — <span id="fcCount">${data.forecasts.length}</span></h2></div>
           <div class="table-wrap"><table><thead><tr>
-            <th data-fcsort="product">Product</th><th data-fcsort="sku">SKU</th>
-            <th data-fcsort="available" style="text-align:right">Stock</th>
-            <th data-fcsort="forecastMonthly" style="text-align:right">Forecast</th>
-            <th data-fcsort="daysOfStock" style="text-align:right">Days Left</th>
-            <th>Stock-Out Date</th><th data-fcsort="trendPct">Trend</th>
-            <th>12-Week Sales</th><th data-fcsort="sellThrough">Sell-Through</th>
-            <th data-fcsort="revenueAtRisk" style="text-align:right">Rev at Risk</th>
-            <th>Reorder By</th><th data-fcsort="priority">Status</th>
+            <th data-fcsort="product">Product <span class="sort-badge inactive">⇅</span></th><th data-fcsort="sku">SKU <span class="sort-badge inactive">⇅</span></th>
+            <th data-fcsort="available" style="text-align:right">Stock <span class="sort-badge inactive">⇅</span></th>
+            <th data-fcsort="forecastMonthly" style="text-align:right">Forecast <span class="sort-badge inactive">⇅</span></th>
+            <th data-fcsort="daysOfStock" style="text-align:right">Days Left <span class="sort-badge inactive">⇅</span></th>
+            <th>Stock-Out Date</th><th data-fcsort="trendPct">Trend <span class="sort-badge inactive">⇅</span></th>
+            <th>12-Week Sales</th><th data-fcsort="sellThrough">Sell-Through <span class="sort-badge inactive">⇅</span></th>
+            <th data-fcsort="revenueAtRisk" style="text-align:right">Rev at Risk <span class="sort-badge inactive">⇅</span></th>
+            <th>Reorder By</th><th data-fcsort="priority">Status <span class="sort-badge inactive">⇅</span></th>
           </tr></thead><tbody id="fcTableBody"></tbody></table></div>
         </div>
       </div>
@@ -1183,8 +1183,8 @@ async function loadForecast() {
       if (sortCol === c) sortDir *= -1; else { sortCol = c; sortDir = -1; }
       $$('th[data-fcsort]').forEach(h => {
         const col = h.dataset.fcsort;
-        const base = h.textContent.replace(/\s*[▲▼⇅]\s*$/, '');
-        h.innerHTML = base + (col === sortCol ? (sortDir === 1 ? ' ▲' : ' ▼') : ' <span style="opacity:.3">⇅</span>');
+        const badge = h.querySelector('.sort-badge');
+        if (badge) { badge.className = 'sort-badge ' + (col === sortCol ? 'active' : 'inactive'); badge.textContent = col === sortCol ? (sortDir === 1 ? '▲' : '▼') : '⇅'; }
       });
       renderTable();
     }));
@@ -1222,8 +1222,8 @@ async function loadAlerts() {
     let alertSortCol = null, alertSortDir = 1; // null = default order
 
     function sortIndicator(col, curCol, curDir) {
-      if (col !== curCol) return ' <span style="opacity:.3">⇅</span>';
-      return curDir === 1 ? ' ▲' : ' ▼';
+      if (col !== curCol) return '<span class="sort-badge inactive">⇅</span>';
+      return '<span class="sort-badge active">' + (curDir === 1 ? '▲' : '▼') + '</span>';
     }
 
     function sortAlertItems(items) {
