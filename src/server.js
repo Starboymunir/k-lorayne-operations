@@ -105,10 +105,11 @@ const ORDERS_QUERY = `
       pageInfo { hasNextPage endCursor }
       edges {
         node {
-          id name createdAt
+          id name createdAt test
           displayFinancialStatus displayFulfillmentStatus
           cancelledAt cancelReason
           totalPriceSet { shopMoney { amount currencyCode } }
+          currentTotalPriceSet { shopMoney { amount } }
           subtotalPriceSet { shopMoney { amount } }
           totalShippingPriceSet { shopMoney { amount } }
           totalRefundedSet { shopMoney { amount } }
@@ -921,22 +922,23 @@ app.get('/api/dashboard', async (req, res) => {
     const yd = new Date(now.getTime() - 86400000);
     const yesterdayStr = dateInTZ(yd, storeTZ);
 
+    // Exclude test orders, cancelled orders, and voided orders
+    const isSaleOrder = o => !o.test && !o.cancelledAt && o.displayFinancialStatus !== 'VOIDED';
+
     let periodOrders;
     if (revPeriod === 'today') {
-      periodOrders = orders.filter(o => !o.cancelledAt && dateInTZ(o.createdAt, storeTZ) === todayStr);
+      periodOrders = orders.filter(o => isSaleOrder(o) && dateInTZ(o.createdAt, storeTZ) === todayStr);
     } else if (revPeriod === 'yesterday') {
-      periodOrders = orders.filter(o => !o.cancelledAt && dateInTZ(o.createdAt, storeTZ) === yesterdayStr);
+      periodOrders = orders.filter(o => isSaleOrder(o) && dateInTZ(o.createdAt, storeTZ) === yesterdayStr);
     } else {
       const days = parseInt(revPeriod, 10) || 30;
       const cutoff = new Date(now.getTime() - days * 86400000);
       const cutoffStr = dateInTZ(cutoff, storeTZ);
-      periodOrders = orders.filter(o => !o.cancelledAt && dateInTZ(o.createdAt, storeTZ) >= cutoffStr);
+      periodOrders = orders.filter(o => isSaleOrder(o) && dateInTZ(o.createdAt, storeTZ) >= cutoffStr);
     }
-    // Net revenue = total - refunds (matches Shopify "Total sales")
+    // Use currentTotalPriceSet — reflects refunds + order edits (matches Shopify "Total sales")
     const revenue = periodOrders.reduce((s, o) => {
-      const gross = parseFloat(o.totalPriceSet?.shopMoney?.amount || 0);
-      const refunded = parseFloat(o.totalRefundedSet?.shopMoney?.amount || 0);
-      return s + gross - refunded;
+      return s + parseFloat(o.currentTotalPriceSet?.shopMoney?.amount || o.totalPriceSet?.shopMoney?.amount || 0);
     }, 0);
     const periodOrderCount = periodOrders.length;
 
@@ -954,12 +956,10 @@ app.get('/api/dashboard', async (req, res) => {
       revByDay[d] = 0;
     }
     orders.forEach(o => {
-      if (o.cancelledAt) return;
+      if (!isSaleOrder(o)) return;
       const d = dateInTZ(o.createdAt, storeTZ);
       if (revByDay[d] !== undefined) {
-        const gross = parseFloat(o.totalPriceSet?.shopMoney?.amount || 0);
-        const refunded = parseFloat(o.totalRefundedSet?.shopMoney?.amount || 0);
-        revByDay[d] += gross - refunded;
+        revByDay[d] += parseFloat(o.currentTotalPriceSet?.shopMoney?.amount || o.totalPriceSet?.shopMoney?.amount || 0);
       }
     });
 
