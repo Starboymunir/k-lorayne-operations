@@ -437,6 +437,25 @@ function saveCustomerCache(customers) {
 
 let _fetchLock = null; // Prevents concurrent data fetches (race condition fix)
 
+// ─── STORE TIMEZONE (matches Shopify dashboard date boundaries) ───
+let _storeTimezone = null;
+async function getStoreTimezone() {
+  if (_storeTimezone) return _storeTimezone;
+  try {
+    const res = await shopifyGraphQL('{ shop { ianaTimezone } }');
+    _storeTimezone = res.data?.shop?.ianaTimezone || 'America/New_York';
+  } catch (e) {
+    console.error('[timezone] Failed to fetch store timezone:', e.message);
+    _storeTimezone = 'America/New_York';
+  }
+  console.log('[timezone] Store timezone:', _storeTimezone);
+  return _storeTimezone;
+}
+
+function dateInTZ(utcDateStr, tz) {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: tz }).format(new Date(utcDateStr));
+}
+
 async function getData(forceRefresh = false) {
   // Cache is valid only if products AND customers are loaded
   if (!forceRefresh && cache.products && cache.customers?.length > 0 && (Date.now() - cache.lastFetch < CACHE_TTL)) {
@@ -894,26 +913,31 @@ app.get('/api/dashboard', async (req, res) => {
     const totalValue = analysis.variants.reduce((s, v) => s + (v.available * v.price), 0);
     const totalUnits = analysis.variants.reduce((s, v) => s + v.available, 0);
 
-    // Revenue period filter (today, yesterday, 7, 14, 30, or all)
+    // Revenue period filter — uses store timezone to match Shopify dashboard
     const revPeriod = req.query.revPeriod || '30';
+    const storeTZ = await getStoreTimezone();
     const now = new Date();
-    let revStart;
+    const todayStr = dateInTZ(now, storeTZ); // e.g. "2026-03-20"
+    const yd = new Date(now.getTime() - 86400000);
+    const yesterdayStr = dateInTZ(yd, storeTZ);
+
+    let periodOrders;
     if (revPeriod === 'today') {
-      revStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      periodOrders = orders.filter(o => !o.cancelledAt && dateInTZ(o.createdAt, storeTZ) === todayStr);
     } else if (revPeriod === 'yesterday') {
-      revStart = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
+      periodOrders = orders.filter(o => !o.cancelledAt && dateInTZ(o.createdAt, storeTZ) === yesterdayStr);
     } else {
       const days = parseInt(revPeriod, 10) || 30;
-      revStart = new Date(Date.now() - days * 86400000);
+      const cutoff = new Date(now.getTime() - days * 86400000);
+      const cutoffStr = dateInTZ(cutoff, storeTZ);
+      periodOrders = orders.filter(o => !o.cancelledAt && dateInTZ(o.createdAt, storeTZ) >= cutoffStr);
     }
-    const revEnd = revPeriod === 'yesterday'
-      ? new Date(now.getFullYear(), now.getMonth(), now.getDate())
-      : now;
-    const periodOrders = orders.filter(o => {
-      const d = new Date(o.createdAt);
-      return d >= revStart && d <= revEnd;
-    });
-    const revenue = periodOrders.reduce((s, o) => s + parseFloat(o.totalPriceSet?.shopMoney?.amount || 0), 0);
+    // Net revenue = total - refunds (matches Shopify "Total sales")
+    const revenue = periodOrders.reduce((s, o) => {
+      const gross = parseFloat(o.totalPriceSet?.shopMoney?.amount || 0);
+      const refunded = parseFloat(o.totalRefundedSet?.shopMoney?.amount || 0);
+      return s + gross - refunded;
+    }, 0);
     const periodOrderCount = periodOrders.length;
 
     const velocityCounts = { 'FAST MOVER': 0, 'REGULAR': 0, 'SLOW MOVER': 0, 'NO SALES': 0 };
@@ -922,16 +946,21 @@ app.get('/api/dashboard', async (req, res) => {
     const tierCounts = { VIP: 0, LOYAL: 0, REPEAT: 0, CUSTOMER: 0, NEW: 0 };
     enriched.forEach(c => tierCounts[c.tier]++);
 
-    // Revenue trend — matches selected period (up to 30 bars max)
+    // Revenue trend — uses store timezone for date grouping
     const chartDays = revPeriod === 'today' ? 1 : revPeriod === 'yesterday' ? 1 : Math.min(parseInt(revPeriod, 10) || 30, 30);
     const revByDay = {};
     for (let i = chartDays - 1; i >= 0; i--) {
-      const d = new Date(Date.now() - i * 86400000).toISOString().split('T')[0];
+      const d = dateInTZ(new Date(Date.now() - i * 86400000), storeTZ);
       revByDay[d] = 0;
     }
     orders.forEach(o => {
-      const d = o.createdAt.split('T')[0];
-      if (revByDay[d] !== undefined) revByDay[d] += parseFloat(o.totalPriceSet?.shopMoney?.amount || 0);
+      if (o.cancelledAt) return;
+      const d = dateInTZ(o.createdAt, storeTZ);
+      if (revByDay[d] !== undefined) {
+        const gross = parseFloat(o.totalPriceSet?.shopMoney?.amount || 0);
+        const refunded = parseFloat(o.totalRefundedSet?.shopMoney?.amount || 0);
+        revByDay[d] += gross - refunded;
+      }
     });
 
     // Recent orders
