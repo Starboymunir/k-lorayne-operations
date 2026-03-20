@@ -776,12 +776,25 @@ async function loadReplenishment() {
     const data = await res.json();
     const totalEstCost = data.items.filter(i => ['CRITICAL','URGENT','REORDER'].includes(i.priority)).reduce((s, i) => s + i.suggestedQty * i.price * 0.4, 0);
     let filterP = 'ALL', searchT = '';
+    let replSortCol = null, replSortDir = 1;
+    function replSortInd(col) {
+      if (col !== replSortCol) return ' <span style="opacity:.3">⇅</span>';
+      return replSortDir === 1 ? ' ▲' : ' ▼';
+    }
 
     function render() {
       let items = data.items;
       if (searchT) { const s = searchT.toLowerCase(); items = items.filter(v => v.product.toLowerCase().includes(s) || v.sku.toLowerCase().includes(s) || v.vendor.toLowerCase().includes(s)); }
       if (filterP !== 'ALL') items = items.filter(v => v.priority === filterP);
-      items.sort((a, b) => { const o = { CRITICAL: 0, URGENT: 1, REORDER: 2, WATCH: 3 }; return (o[a.priority] ?? 9) - (o[b.priority] ?? 9); });
+      if (replSortCol) {
+        items = [...items].sort((a, b) => {
+          let va = a[replSortCol], vb = b[replSortCol];
+          if (typeof va === 'string') return (va || '').localeCompare(vb || '') * replSortDir;
+          return ((va || 0) - (vb || 0)) * replSortDir;
+        });
+      } else {
+        items.sort((a, b) => { const o = { CRITICAL: 0, URGENT: 1, REORDER: 2, WATCH: 3 }; return (o[a.priority] ?? 9) - (o[b.priority] ?? 9); });
+      }
       const tbody = document.getElementById('replBody');
       if (tbody) {
         tbody.innerHTML = items.map(v => `<tr>
@@ -819,11 +832,21 @@ async function loadReplenishment() {
         </div>
       </div>
       <div class="table-wrap"><table><thead><tr>
-        <th>Status</th><th>Product</th><th>Variant</th><th>SKU</th><th>Vendor</th>
-        <th style="text-align:right">Stock</th><th style="text-align:right">Days Left</th>
-        <th style="text-align:right">Sales</th><th style="text-align:right">Order Qty</th>
+        <th>Status</th><th data-replsort="product" style="cursor:pointer">Product${replSortInd('product')}</th><th data-replsort="variant" style="cursor:pointer">Variant${replSortInd('variant')}</th><th>SKU</th><th data-replsort="vendor" style="cursor:pointer">Vendor${replSortInd('vendor')}</th>
+        <th data-replsort="available" style="text-align:right;cursor:pointer">Stock${replSortInd('available')}</th><th data-replsort="daysOfStock" style="text-align:right;cursor:pointer">Days Left${replSortInd('daysOfStock')}</th>
+        <th data-replsort="monthlyVelocity" style="text-align:right;cursor:pointer">Sales${replSortInd('monthlyVelocity')}</th><th data-replsort="suggestedQty" style="text-align:right;cursor:pointer">Order Qty${replSortInd('suggestedQty')}</th>
       </tr></thead><tbody id="replBody"></tbody></table></div></div>`;
 
+    $$('[data-replsort]').forEach(th => th.addEventListener('click', () => {
+      const c = th.dataset.replsort;
+      if (replSortCol === c) replSortDir *= -1; else { replSortCol = c; replSortDir = 1; }
+      $$('[data-replsort]').forEach(h => {
+        const col = h.dataset.replsort;
+        const base = h.textContent.replace(/\s*[▲▼⇅]\s*$/, '');
+        h.innerHTML = base + (col === replSortCol ? (replSortDir === 1 ? ' ▲' : ' ▼') : ' <span style="opacity:.3">⇅</span>');
+      });
+      render();
+    }));
     $('#replSearch')?.addEventListener('input', e => { searchT = e.target.value; render(); });
     $$('[data-rfilter]').forEach(btn => btn.addEventListener('click', () => {
       $$('.filter-btn[data-rfilter]').forEach(b => b.classList.remove('active'));
