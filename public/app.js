@@ -850,6 +850,12 @@ async function loadForecast() {
 
     const s = data.summary;
     let view = 'overview', searchTerm = '', filterTrend = 'ALL', sortCol = 'revenueAtRisk', sortDir = -1;
+    let arSortCol = 'daysOfStock', arSortDir = 1; // at-risk table sort
+
+    function arSortInd(col) {
+      if (col !== arSortCol) return ' <span style="opacity:.3">⇅</span>';
+      return arSortDir === 1 ? ' ▲' : ' ▼';
+    }
 
     // Mini sparkline builder (12 weeks of data)
     function sparkline(weeks, color = 'var(--accent)') {
@@ -942,13 +948,13 @@ async function loadForecast() {
             <span style="font-size:13px;color:var(--text-muted)">${data.atRisk.length} items · ${fmtMoney(data.atRisk.reduce((s,f) => s + f.revenueAtRisk, 0))} revenue at risk</span>
           </div>
           <div class="table-wrap"><table><thead><tr>
-            <th>Product</th><th>SKU</th><th style="text-align:right">Stock</th>
-            <th style="text-align:right">Days Left</th><th>Stock-Out Date</th>
-            <th>Trend</th><th>12-Week Sales</th>
-            <th style="text-align:right">Forecast/mo</th><th style="text-align:right">Revenue at Risk</th>
+            <th data-arsort="product" style="cursor:pointer">Product${arSortInd('product')}</th><th>SKU</th><th data-arsort="available" style="text-align:right;cursor:pointer">Stock${arSortInd('available')}</th>
+            <th data-arsort="daysOfStock" style="text-align:right;cursor:pointer">Days Left${arSortInd('daysOfStock')}</th><th data-arsort="stockOutDate" style="cursor:pointer">Stock-Out Date${arSortInd('stockOutDate')}</th>
+            <th data-arsort="trendPct" style="cursor:pointer">Trend${arSortInd('trendPct')}</th><th>12-Week Sales</th>
+            <th data-arsort="forecastMonthly" style="text-align:right;cursor:pointer">Forecast/mo${arSortInd('forecastMonthly')}</th><th data-arsort="revenueAtRisk" style="text-align:right;cursor:pointer">Revenue at Risk${arSortInd('revenueAtRisk')}</th>
             <th>Reorder By</th>
           </tr></thead><tbody>
-            ${data.atRisk.slice(0, 20).map(f => `<tr>
+            ${[...data.atRisk].sort((a, b) => { let va = a[arSortCol], vb = b[arSortCol]; if (typeof va === 'string') return (va || '').localeCompare(vb || '') * arSortDir; return ((va || 0) - (vb || 0)) * arSortDir; }).slice(0, 20).map(f => `<tr>
               <td>${escHtml(f.product)}</td>
               <td style="font-family:monospace;font-size:12px">${escHtml(f.sku) || '—'}</td>
               <td style="text-align:right;font-weight:600;color:${f.available <= 0 ? 'var(--red)' : f.daysOfStock < 7 ? 'var(--orange)' : 'var(--text)'}">${f.available}</td>
@@ -1009,10 +1015,19 @@ async function loadForecast() {
       document.getElementById('fcCount').textContent = `${items.length} of ${data.forecasts.length}`;
     }
 
+    function bindArSortHeaders() {
+      $$('[data-arsort]').forEach(th => th.addEventListener('click', () => {
+        const c = th.dataset.arsort;
+        if (arSortCol === c) arSortDir *= -1; else { arSortCol = c; arSortDir = 1; }
+        renderOverview();
+        bindArSortHeaders();
+      }));
+    }
+
     function renderView() {
       const body = document.getElementById('fcBody');
       const table = document.getElementById('fcTableWrap');
-      if (view === 'overview') { if (body) body.style.display = ''; if (table) table.style.display = 'none'; renderOverview(); }
+      if (view === 'overview') { if (body) body.style.display = ''; if (table) table.style.display = 'none'; renderOverview(); bindArSortHeaders(); }
       else { if (body) body.style.display = 'none'; if (table) table.style.display = ''; renderTable(); }
     }
 
@@ -1143,6 +1158,11 @@ async function loadForecast() {
     $$('th[data-fcsort]').forEach(th => th.addEventListener('click', () => {
       const c = th.dataset.fcsort;
       if (sortCol === c) sortDir *= -1; else { sortCol = c; sortDir = -1; }
+      $$('th[data-fcsort]').forEach(h => {
+        const col = h.dataset.fcsort;
+        const base = h.textContent.replace(/\s*[▲▼⇅]\s*$/, '');
+        h.innerHTML = base + (col === sortCol ? (sortDir === 1 ? ' ▲' : ' ▼') : ' <span style="opacity:.3">⇅</span>');
+      });
       renderTable();
     }));
 
@@ -1176,6 +1196,29 @@ async function loadAlerts() {
 
     let velocityMode = 'monthly'; // 'weekly' | 'monthly'
     let activeFilter = null; // null = show all, or 'CRITICAL' | 'URGENT' etc.
+    let alertSortCol = null, alertSortDir = 1; // null = default order
+
+    function sortIndicator(col, curCol, curDir) {
+      if (col !== curCol) return ' <span style="opacity:.3">⇅</span>';
+      return curDir === 1 ? ' ▲' : ' ▼';
+    }
+
+    function sortAlertItems(items) {
+      if (!alertSortCol) return items;
+      const sorted = [...items];
+      sorted.sort((a, b) => {
+        let va, vb;
+        if (alertSortCol === 'velocity') {
+          va = velocityMode === 'weekly' ? (a.weeklyVelocity || Math.round(a.monthlyVelocity / 4.3)) : a.monthlyVelocity;
+          vb = velocityMode === 'weekly' ? (b.weeklyVelocity || Math.round(b.monthlyVelocity / 4.3)) : b.monthlyVelocity;
+        } else {
+          va = a[alertSortCol]; vb = b[alertSortCol];
+        }
+        if (typeof va === 'string') return va.localeCompare(vb) * alertSortDir;
+        return ((va || 0) - (vb || 0)) * alertSortDir;
+      });
+      return sorted;
+    }
 
     function renderAlertTables() {
       const velLabel = velocityMode === 'weekly' ? 'Weekly' : 'Monthly';
@@ -1186,8 +1229,8 @@ async function loadAlerts() {
         if (!items.length) return '';
         const alertTips = { CRITICAL: 'These items are out of stock and have proven sales — they are losing you revenue right now.', URGENT: 'These items will run out within 14 days at current sales pace.', REORDER: 'Below safety stock — include in your next purchase order.', WATCH: 'Stock is getting low, keep an eye on these this week.' };
         return `<div class="section"><div class="section-header"><h2 class="section-title" style="color:${g.color}">${g.title} (${items.length}) ${infoTip(alertTips[g.key] || '')}</h2></div>
-          <div class="table-wrap"><table><thead><tr><th>Product</th><th>Variant</th><th>SKU</th><th style="text-align:right">Stock</th><th style="text-align:right">Days Left</th><th style="text-align:right">${velLabel}</th><th style="text-align:right">Order</th><th>Alert Me</th></tr></thead>
-          <tbody>${items.map(a => {
+          <div class="table-wrap"><table><thead><tr><th data-alertsort="product" style="cursor:pointer">Product${sortIndicator('product',alertSortCol,alertSortDir)}</th><th data-alertsort="variant" style="cursor:pointer">Variant${sortIndicator('variant',alertSortCol,alertSortDir)}</th><th>SKU</th><th data-alertsort="available" style="text-align:right;cursor:pointer">Stock${sortIndicator('available',alertSortCol,alertSortDir)}</th><th data-alertsort="daysOfStock" style="text-align:right;cursor:pointer">Days Left${sortIndicator('daysOfStock',alertSortCol,alertSortDir)}</th><th data-alertsort="velocity" style="text-align:right;cursor:pointer">${velLabel}${sortIndicator('velocity',alertSortCol,alertSortDir)}</th><th data-alertsort="suggestedQty" style="text-align:right;cursor:pointer">Order${sortIndicator('suggestedQty',alertSortCol,alertSortDir)}</th><th>Alert Me</th></tr></thead>
+          <tbody>${sortAlertItems(items).map(a => {
             const vel = velocityMode === 'weekly' ? (a.weeklyVelocity || Math.round(a.monthlyVelocity / 4.3)) : a.monthlyVelocity;
             return `<tr>
             <td>${escHtml(a.product)}</td><td>${a.variant === 'Default Title' ? '—' : escHtml(a.variant)}</td>
@@ -1227,6 +1270,7 @@ async function loadAlerts() {
       activeFilter = activeFilter === key ? null : key; // toggle
       $$('[data-alert-filter]').forEach(c => c.style.outline = c.dataset.alertFilter === activeFilter ? '2px solid var(--accent)' : 'none');
       document.getElementById('alertTablesWrap').innerHTML = renderAlertTables();
+      bindAlertSortHeaders();
     }));
 
     // Weekly/Monthly velocity toggle
@@ -1235,7 +1279,18 @@ async function loadAlerts() {
       btn.classList.add('active');
       velocityMode = btn.dataset.vel;
       document.getElementById('alertTablesWrap').innerHTML = renderAlertTables();
+      bindAlertSortHeaders();
     }));
+
+    function bindAlertSortHeaders() {
+      $$('[data-alertsort]').forEach(th => th.addEventListener('click', () => {
+        const c = th.dataset.alertsort;
+        if (alertSortCol === c) alertSortDir *= -1; else { alertSortCol = c; alertSortDir = 1; }
+        document.getElementById('alertTablesWrap').innerHTML = renderAlertTables();
+        bindAlertSortHeaders();
+      }));
+    }
+    bindAlertSortHeaders();
 
     // Email notification button
     document.getElementById('alertNotifyBtn')?.addEventListener('click', async () => {
