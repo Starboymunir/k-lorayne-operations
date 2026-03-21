@@ -116,7 +116,7 @@ const ORDERS_QUERY = `
           totalTaxSet { shopMoney { amount } }
           totalDiscountsSet { shopMoney { amount } }
           totalTipReceivedSet { shopMoney { amount } }
-          refunds(first: 10) { createdAt totalRefundedSet { shopMoney { amount } } }
+          refunds { createdAt totalRefundedSet { shopMoney { amount } } }
           customer { id displayName email phone }
           shippingAddress { city province country }
           lineItems(first: 100) {
@@ -973,6 +973,7 @@ app.get('/api/debug/revenue', async (req, res) => {
     }
 
     res.json({
+      _v: 'v3',
       storeTZ, todayStr, cutoffStr, revPeriod: `Last ${days} days`,
       orderCount: periodOrders.length,
       totals: {
