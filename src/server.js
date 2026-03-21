@@ -919,92 +919,96 @@ app.get('/api/dashboard', async (req, res) => {
     const totalValue = analysis.variants.reduce((s, v) => s + (v.available * v.price), 0);
     const totalUnits = analysis.variants.reduce((s, v) => s + v.available, 0);
 
-    // Revenue period filter — uses store timezone to match Shopify dashboard
+    // Revenue via ShopifyQL — matches Shopify dashboard exactly
+    // (accounts for returns, shipping refunds, and all adjustments)
     const revPeriod = req.query.revPeriod || '30';
-    const storeTZ = await getStoreTimezone();
-    const now = new Date();
-    const todayStr = dateInTZ(now, storeTZ); // e.g. "2026-03-20"
-    const yd = new Date(now.getTime() - 86400000);
-    const yesterdayStr = dateInTZ(yd, storeTZ);
-
-    // Exclude test orders, cancelled orders, and voided orders
     const isSaleOrder = o => !o.test && !o.cancelledAt && o.displayFinancialStatus !== 'VOIDED';
 
-    let periodOrders, cutoffStr;
+    let qlSince, qlUntil;
     if (revPeriod === 'today') {
-      cutoffStr = todayStr;
-      periodOrders = orders.filter(o => isSaleOrder(o) && dateInTZ(o.createdAt, storeTZ) === todayStr);
+      qlSince = 'today'; qlUntil = 'today';
     } else if (revPeriod === 'yesterday') {
-      cutoffStr = yesterdayStr;
-      periodOrders = orders.filter(o => isSaleOrder(o) && dateInTZ(o.createdAt, storeTZ) === yesterdayStr);
+      qlSince = 'yesterday'; qlUntil = 'yesterday';
     } else {
-      // "Last N days" in Shopify = today + N previous days (e.g. Last 7 = Mar 13-20 = 8 dates)
-      // Shopify uses the store's IANA timezone; todayStr is already in that timezone
+      const days = parseInt(revPeriod, 10) || 30;
+      qlSince = `-${days}d`; qlUntil = 'today';
+    }
+
+    // ShopifyQL: total revenue + daily breakdown in one query
+    const chartDays = revPeriod === 'today' ? 1 : revPeriod === 'yesterday' ? 1 : Math.min(parseInt(revPeriod, 10) || 30, 30);
+    const qlQuery = `FROM sales SHOW total_sales GROUP BY day SINCE ${qlSince} UNTIL ${qlUntil} ORDER BY day ASC`;
+    let revenue = 0;
+    const revByDay = {};
+    try {
+      const qlRes = await shopifyGraphQL(`{ shopifyqlQuery(query: "${qlQuery}") { parseErrors tableData { columns { name } rows } } }`);
+      const parseErrors = qlRes.data?.shopifyqlQuery?.parseErrors;
+      if (parseErrors?.length) throw new Error(`ShopifyQL parse: ${parseErrors[0]}`);
+      const rows = qlRes.data?.shopifyqlQuery?.tableData?.rows || [];
+      for (const row of rows) {
+        const day = row.day;
+        const sales = parseFloat(row.total_sales || 0);
+        revenue += sales;
+        revByDay[day] = sales;
+      }
+    } catch (e) {
+      console.error('[revenue] ShopifyQL failed, falling back to order-based calc:', e.message);
+      // Fallback: order-based calculation (may differ slightly from Shopify)
+      const storeTZ = await getStoreTimezone();
+      const now = new Date();
+      const todayStr = dateInTZ(now, storeTZ);
       const days = parseInt(revPeriod, 10) || 30;
       const [y, m, d] = todayStr.split('-').map(Number);
       const startDate = new Date(Date.UTC(y, m - 1, d - days));
-      cutoffStr = startDate.toISOString().split('T')[0]; // YYYY-MM-DD
-      periodOrders = orders.filter(o => isSaleOrder(o) && dateInTZ(o.createdAt, storeTZ) >= cutoffStr);
-    }
-
-    // Shopify "Total sales" uses currentTotalPriceSet but:
-    //   1. Excludes tips
-    //   2. Attributes refunds by REFUND DATE, not order creation date
-    // So we subtract tips and also subtract refunds that occurred in the period
-    // for orders that were created OUTSIDE the period.
-    const periodOrderIds = new Set(periodOrders.map(o => o.id));
-    let outOfPeriodRefunds = 0;
-    for (const o of orders) {
-      if (o.test || periodOrderIds.has(o.id)) continue;
-      for (const r of (o.refunds || [])) {
-        const refundDate = dateInTZ(r.createdAt, storeTZ);
-        if (refundDate >= cutoffStr && refundDate <= todayStr) {
-          outOfPeriodRefunds += parseFloat(r.totalRefundedSet?.shopMoney?.amount || 0);
+      const cutoffStr = startDate.toISOString().split('T')[0];
+      const periodSaleOrders = orders.filter(o => isSaleOrder(o) && dateInTZ(o.createdAt, storeTZ) >= cutoffStr);
+      const periodIds = new Set(periodSaleOrders.map(o => o.id));
+      let oopRefunds = 0;
+      for (const o of orders) {
+        if (o.test || periodIds.has(o.id)) continue;
+        for (const r of (o.refunds || [])) {
+          const rd = dateInTZ(r.createdAt, storeTZ);
+          if (rd >= cutoffStr && rd <= todayStr) oopRefunds += parseFloat(r.totalRefundedSet?.shopMoney?.amount || 0);
         }
       }
+      revenue = periodSaleOrders.reduce((s, o) => s + parseFloat(o.currentTotalPriceSet?.shopMoney?.amount || 0), 0)
+        - periodSaleOrders.reduce((s, o) => s + parseFloat(o.totalTipReceivedSet?.shopMoney?.amount || 0), 0)
+        - oopRefunds;
+      // Build chart from orders
+      for (let i = chartDays; i >= 0; i--) {
+        const dd = new Date(Date.UTC(y, m - 1, d - i));
+        revByDay[dd.toISOString().split('T')[0]] = 0;
+      }
+      orders.forEach(o => {
+        if (!isSaleOrder(o)) return;
+        const dayStr = dateInTZ(o.createdAt, storeTZ);
+        if (revByDay[dayStr] !== undefined) {
+          revByDay[dayStr] += parseFloat(o.currentTotalPriceSet?.shopMoney?.amount || 0)
+            - parseFloat(o.totalTipReceivedSet?.shopMoney?.amount || 0);
+        }
+      });
     }
-    const grossRevenue = periodOrders.reduce((s, o) => {
-      return s + parseFloat(o.currentTotalPriceSet?.shopMoney?.amount || o.totalPriceSet?.shopMoney?.amount || 0);
-    }, 0);
-    const tips = periodOrders.reduce((s, o) => s + parseFloat(o.totalTipReceivedSet?.shopMoney?.amount || 0), 0);
-    const revenue = grossRevenue - tips - outOfPeriodRefunds;
-    const periodOrderCount = periodOrders.length;
+
+    // Count period orders for display
+    const storeTZ = await getStoreTimezone();
+    const todayStr = dateInTZ(new Date(), storeTZ);
+    let periodOrderCount;
+    if (revPeriod === 'today') {
+      periodOrderCount = orders.filter(o => isSaleOrder(o) && dateInTZ(o.createdAt, storeTZ) === todayStr).length;
+    } else if (revPeriod === 'yesterday') {
+      const yd = new Date(Date.now() - 86400000);
+      periodOrderCount = orders.filter(o => isSaleOrder(o) && dateInTZ(o.createdAt, storeTZ) === dateInTZ(yd, storeTZ)).length;
+    } else {
+      const days = parseInt(revPeriod, 10) || 30;
+      const [y, m, d] = todayStr.split('-').map(Number);
+      const cutoffStr = new Date(Date.UTC(y, m - 1, d - days)).toISOString().split('T')[0];
+      periodOrderCount = orders.filter(o => isSaleOrder(o) && dateInTZ(o.createdAt, storeTZ) >= cutoffStr).length;
+    }
 
     const velocityCounts = { 'FAST MOVER': 0, 'REGULAR': 0, 'SLOW MOVER': 0, 'NO SALES': 0 };
     analysis.variants.forEach(v => velocityCounts[v.velocityClass]++);
 
     const tierCounts = { VIP: 0, LOYAL: 0, REPEAT: 0, CUSTOMER: 0, NEW: 0 };
     enriched.forEach(c => tierCounts[c.tier]++);
-
-    // Revenue trend — uses store timezone for date grouping
-    const chartDays = revPeriod === 'today' ? 1 : revPeriod === 'yesterday' ? 1 : Math.min(parseInt(revPeriod, 10) || 30, 30);
-    const revByDay = {};
-    const [ty, tm, td] = todayStr.split('-').map(Number);
-    for (let i = chartDays; i >= 0; i--) {
-      const dd = new Date(Date.UTC(ty, tm - 1, td - i));
-      revByDay[dd.toISOString().split('T')[0]] = 0;
-    }
-    orders.forEach(o => {
-      if (!isSaleOrder(o)) return;
-      const d = dateInTZ(o.createdAt, storeTZ);
-      if (revByDay[d] !== undefined) {
-        const orderRev = parseFloat(o.currentTotalPriceSet?.shopMoney?.amount || o.totalPriceSet?.shopMoney?.amount || 0);
-        const orderTips = parseFloat(o.totalTipReceivedSet?.shopMoney?.amount || 0);
-        revByDay[d] += orderRev - orderTips;
-      }
-    });
-    // Attribute refunds to chart by refund date (for orders whose creation date is outside chart range)
-    orders.forEach(o => {
-      if (o.test) return;
-      const orderDay = dateInTZ(o.createdAt, storeTZ);
-      if (revByDay[orderDay] !== undefined) return; // order already in chart range
-      for (const r of (o.refunds || [])) {
-        const refundDay = dateInTZ(r.createdAt, storeTZ);
-        if (revByDay[refundDay] !== undefined) {
-          revByDay[refundDay] -= parseFloat(r.totalRefundedSet?.shopMoney?.amount || 0);
-        }
-      }
-    });
 
     // Recent orders
     const recentOrders = [...orders]
