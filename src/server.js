@@ -963,6 +963,33 @@ app.get('/api/debug/revenue', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ShopifyQL query to get EXACT "Total sales" from Shopify Analytics
+app.get('/api/debug/shopify-sales', async (req, res) => {
+  try {
+    const days = parseInt(req.query.days || '7', 10);
+    const storeTZ = await getStoreTimezone();
+    const todayStr = dateInTZ(new Date(), storeTZ);
+    const [y, m, d] = todayStr.split('-').map(Number);
+    const startDate = new Date(Date.UTC(y, m - 1, d - days));
+    const startStr = startDate.toISOString().split('T')[0];
+
+    const query = `{
+      shopifyqlQuery(query: "FROM sales SHOW total_sales, net_sales, gross_sales, discounts, returns, taxes, shipping BY day SINCE '${startStr}' UNTIL '${todayStr}' ORDER BY day ASC") {
+        __typename
+        ... on TableResponse {
+          tableData { rowData columns { name dataType } }
+        }
+        ... on PolarisVizResponse {
+          data { key data { key value } }
+        }
+      }
+    }`;
+
+    const result = await shopifyGraphQL(query);
+    res.json({ storeTZ, todayStr, startStr, days, result });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // ─── DASHBOARD ─────────────────────────────────
 
 app.get('/api/dashboard', async (req, res) => {
