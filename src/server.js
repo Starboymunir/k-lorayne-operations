@@ -114,7 +114,6 @@ const ORDERS_QUERY = `
           totalShippingPriceSet { shopMoney { amount } }
           totalRefundedSet { shopMoney { amount } }
           totalTaxSet { shopMoney { amount } }
-          currentTotalDiscountsSet { shopMoney { amount } }
           totalDiscountsSet { shopMoney { amount } }
           totalTipReceivedSet { shopMoney { amount } }
           customer { id displayName email phone }
@@ -926,7 +925,7 @@ app.get('/api/debug/revenue', async (req, res) => {
       const shipping = parseFloat(o.totalShippingPriceSet?.shopMoney?.amount || 0);
       const refunded = parseFloat(o.totalRefundedSet?.shopMoney?.amount || 0);
       const tax = parseFloat(o.totalTaxSet?.shopMoney?.amount || 0);
-      const discounts = parseFloat(o.currentTotalDiscountsSet?.shopMoney?.amount || o.totalDiscountsSet?.shopMoney?.amount || 0);
+      const discounts = parseFloat(o.totalDiscountsSet?.shopMoney?.amount || 0);
       const tips = parseFloat(o.totalTipReceivedSet?.shopMoney?.amount || 0);
       totalCurrent += current; totalOriginal += original; totalSubtotal += subtotal;
       totalShipping += shipping; totalRefunded += refunded; totalTax += tax;
