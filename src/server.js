@@ -899,6 +899,54 @@ app.get('/api/glossary', (req, res) => {
   });
 });
 
+// ─── REVENUE DEBUG (temporary) ─────────────────
+app.get('/api/debug/revenue', async (req, res) => {
+  try {
+    const { orders } = await getData();
+    const storeTZ = await getStoreTimezone();
+    const now = new Date();
+    const todayStr = dateInTZ(now, storeTZ);
+    const revPeriod = req.query.revPeriod || '7';
+    const days = parseInt(revPeriod, 10) || 7;
+    const [y, m, d] = todayStr.split('-').map(Number);
+    const startDate = new Date(Date.UTC(y, m - 1, d - days));
+    const cutoffStr = startDate.toISOString().split('T')[0];
+    const isSaleOrder = o => !o.test && !o.cancelledAt && o.displayFinancialStatus !== 'VOIDED';
+    const periodOrders = orders.filter(o => isSaleOrder(o) && dateInTZ(o.createdAt, storeTZ) >= cutoffStr);
+
+    let totalCurrent = 0, totalOriginal = 0, totalSubtotal = 0, totalShipping = 0, totalRefunded = 0;
+    const breakdown = periodOrders.map(o => {
+      const current = parseFloat(o.currentTotalPriceSet?.shopMoney?.amount || 0);
+      const original = parseFloat(o.totalPriceSet?.shopMoney?.amount || 0);
+      const subtotal = parseFloat(o.subtotalPriceSet?.shopMoney?.amount || 0);
+      const shipping = parseFloat(o.totalShippingPriceSet?.shopMoney?.amount || 0);
+      const refunded = parseFloat(o.totalRefundedSet?.shopMoney?.amount || 0);
+      totalCurrent += current; totalOriginal += original; totalSubtotal += subtotal;
+      totalShipping += shipping; totalRefunded += refunded;
+      return {
+        name: o.name, date: dateInTZ(o.createdAt, storeTZ),
+        financial: o.displayFinancialStatus,
+        current, original, subtotal, shipping, refunded,
+        netSales: subtotal - refunded,
+      };
+    });
+    res.json({
+      storeTZ, todayStr, cutoffStr, revPeriod: `Last ${days} days`,
+      orderCount: periodOrders.length,
+      totals: {
+        currentTotalPrice: +totalCurrent.toFixed(2),
+        originalTotalPrice: +totalOriginal.toFixed(2),
+        subtotal: +totalSubtotal.toFixed(2),
+        shipping: +totalShipping.toFixed(2),
+        refunded: +totalRefunded.toFixed(2),
+        netSales_subtotalMinusRefunded: +(totalSubtotal - totalRefunded).toFixed(2),
+        currentMinusShipping: +(totalCurrent - totalShipping).toFixed(2),
+      },
+      orders: breakdown,
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // ─── DASHBOARD ─────────────────────────────────
 
 app.get('/api/dashboard', async (req, res) => {
