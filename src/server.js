@@ -113,6 +113,10 @@ const ORDERS_QUERY = `
           subtotalPriceSet { shopMoney { amount } }
           totalShippingPriceSet { shopMoney { amount } }
           totalRefundedSet { shopMoney { amount } }
+          totalTaxSet { shopMoney { amount } }
+          currentTotalDiscountsSet { shopMoney { amount } }
+          totalDiscountsSet { shopMoney { amount } }
+          totalTipReceivedSet { shopMoney { amount } }
           customer { id displayName email phone }
           shippingAddress { city province country }
           lineItems(first: 100) {
@@ -914,22 +918,28 @@ app.get('/api/debug/revenue', async (req, res) => {
     const isSaleOrder = o => !o.test && !o.cancelledAt && o.displayFinancialStatus !== 'VOIDED';
     const periodOrders = orders.filter(o => isSaleOrder(o) && dateInTZ(o.createdAt, storeTZ) >= cutoffStr);
 
-    let totalCurrent = 0, totalOriginal = 0, totalSubtotal = 0, totalShipping = 0, totalRefunded = 0;
+    let totalCurrent = 0, totalOriginal = 0, totalSubtotal = 0, totalShipping = 0, totalRefunded = 0, totalTax = 0, totalDiscounts = 0, totalTips = 0;
     const breakdown = periodOrders.map(o => {
       const current = parseFloat(o.currentTotalPriceSet?.shopMoney?.amount || 0);
       const original = parseFloat(o.totalPriceSet?.shopMoney?.amount || 0);
       const subtotal = parseFloat(o.subtotalPriceSet?.shopMoney?.amount || 0);
       const shipping = parseFloat(o.totalShippingPriceSet?.shopMoney?.amount || 0);
       const refunded = parseFloat(o.totalRefundedSet?.shopMoney?.amount || 0);
+      const tax = parseFloat(o.totalTaxSet?.shopMoney?.amount || 0);
+      const discounts = parseFloat(o.currentTotalDiscountsSet?.shopMoney?.amount || o.totalDiscountsSet?.shopMoney?.amount || 0);
+      const tips = parseFloat(o.totalTipReceivedSet?.shopMoney?.amount || 0);
       totalCurrent += current; totalOriginal += original; totalSubtotal += subtotal;
-      totalShipping += shipping; totalRefunded += refunded;
+      totalShipping += shipping; totalRefunded += refunded; totalTax += tax;
+      totalDiscounts += discounts; totalTips += tips;
+      const actualShipping = current - subtotal - tax + discounts;
       return {
         name: o.name, date: dateInTZ(o.createdAt, storeTZ),
         financial: o.displayFinancialStatus,
-        current, original, subtotal, shipping, refunded,
-        netSales: subtotal - refunded,
+        current, original, subtotal, shipping, refunded, tax, discounts, tips,
+        actualShipping: +actualShipping.toFixed(2),
       };
     });
+    const actualShippingTotal = totalCurrent - totalSubtotal - totalTax + totalDiscounts;
     res.json({
       storeTZ, todayStr, cutoffStr, revPeriod: `Last ${days} days`,
       orderCount: periodOrders.length,
@@ -937,10 +947,17 @@ app.get('/api/debug/revenue', async (req, res) => {
         currentTotalPrice: +totalCurrent.toFixed(2),
         originalTotalPrice: +totalOriginal.toFixed(2),
         subtotal: +totalSubtotal.toFixed(2),
-        shipping: +totalShipping.toFixed(2),
+        shipping_beforeDiscounts: +totalShipping.toFixed(2),
+        actualShipping: +actualShippingTotal.toFixed(2),
+        tax: +totalTax.toFixed(2),
+        discounts: +totalDiscounts.toFixed(2),
+        tips: +totalTips.toFixed(2),
         refunded: +totalRefunded.toFixed(2),
-        netSales_subtotalMinusRefunded: +(totalSubtotal - totalRefunded).toFixed(2),
-        currentMinusShipping: +(totalCurrent - totalShipping).toFixed(2),
+        formula_subtotal_plus_tax: +(totalSubtotal + totalTax).toFixed(2),
+        formula_subtotal_plus_shipping_plus_tax: +(totalSubtotal + actualShippingTotal + totalTax).toFixed(2),
+        formula_current_minus_tax: +(totalCurrent - totalTax).toFixed(2),
+        formula_current_minus_shipping: +(totalCurrent - actualShippingTotal).toFixed(2),
+        formula_current_minus_tips: +(totalCurrent - totalTips).toFixed(2),
       },
       orders: breakdown,
     });
