@@ -903,130 +903,6 @@ app.get('/api/glossary', (req, res) => {
   });
 });
 
-// ─── REVENUE DEBUG (temporary) ─────────────────
-app.get('/api/debug/revenue', async (req, res) => {
-  try {
-    const { orders } = await getData();
-    const storeTZ = await getStoreTimezone();
-    const now = new Date();
-    const todayStr = dateInTZ(now, storeTZ);
-    const revPeriod = req.query.revPeriod || '7';
-    const days = parseInt(revPeriod, 10) || 7;
-    const [y, m, d] = todayStr.split('-').map(Number);
-    const startDate = new Date(Date.UTC(y, m - 1, d - days));
-    const cutoffStr = startDate.toISOString().split('T')[0];
-    const isSaleOrder = o => !o.test && !o.cancelledAt && o.displayFinancialStatus !== 'VOIDED';
-    const periodOrders = orders.filter(o => isSaleOrder(o) && dateInTZ(o.createdAt, storeTZ) >= cutoffStr);
-
-    let totalCurrent = 0, totalOriginal = 0, totalSubtotal = 0, totalShipping = 0, totalRefunded = 0, totalTax = 0, totalDiscounts = 0, totalTips = 0;
-    const breakdown = periodOrders.map(o => {
-      const current = parseFloat(o.currentTotalPriceSet?.shopMoney?.amount || 0);
-      const original = parseFloat(o.totalPriceSet?.shopMoney?.amount || 0);
-      const subtotal = parseFloat(o.subtotalPriceSet?.shopMoney?.amount || 0);
-      const shipping = parseFloat(o.totalShippingPriceSet?.shopMoney?.amount || 0);
-      const refunded = parseFloat(o.totalRefundedSet?.shopMoney?.amount || 0);
-      const tax = parseFloat(o.totalTaxSet?.shopMoney?.amount || 0);
-      const discounts = parseFloat(o.totalDiscountsSet?.shopMoney?.amount || 0);
-      const tips = parseFloat(o.totalTipReceivedSet?.shopMoney?.amount || 0);
-      totalCurrent += current; totalOriginal += original; totalSubtotal += subtotal;
-      totalShipping += shipping; totalRefunded += refunded; totalTax += tax;
-      totalDiscounts += discounts; totalTips += tips;
-      const actualShipping = current - subtotal - tax + discounts;
-      return {
-        name: o.name, date: dateInTZ(o.createdAt, storeTZ),
-        financial: o.displayFinancialStatus,
-        current, original, subtotal, shipping, refunded, tax, discounts, tips,
-        actualShipping: +actualShipping.toFixed(2),
-      };
-    });
-    const actualShippingTotal = totalCurrent - totalSubtotal - totalTax + totalDiscounts;
-
-    // Also try ShopifyQL for exact Shopify analytics numbers
-    let shopifyql = null;
-    try {
-      const sqlQuery = `{
-        shopifyqlQuery(query: "FROM sales SHOW total_sales, net_sales, gross_sales, discounts, returns, taxes, shipping BY day SINCE '${cutoffStr}' UNTIL '${todayStr}' ORDER BY day ASC") {
-          __typename
-          ... on TableResponse { tableData { rowData columns { name dataType } } }
-          ... on PolarisVizResponse { data { key data { key value } } }
-        }
-      }`;
-      shopifyql = await shopifyGraphQL(sqlQuery);
-    } catch (sqle) { shopifyql = { error: sqle.message }; }
-
-    // Also check refunds by REFUND DATE across all orders
-    let refundsByRefundDate = 0;
-    const refundDetails = [];
-    for (const o of orders) {
-      if (o.test) continue;
-      const refunds = o.refunds || [];
-      for (const r of refunds) {
-        const refundDate = dateInTZ(r.createdAt, storeTZ);
-        if (refundDate >= cutoffStr && refundDate <= todayStr) {
-          const amt = r.totalRefundedSet
-            ? parseFloat(r.totalRefundedSet.shopMoney?.amount || 0)
-            : 0;
-          refundsByRefundDate += amt;
-          refundDetails.push({ order: o.name, orderDate: dateInTZ(o.createdAt, storeTZ), refundDate, amount: amt });
-        }
-      }
-    }
-
-    res.json({
-      _v: 'v3',
-      storeTZ, todayStr, cutoffStr, revPeriod: `Last ${days} days`,
-      orderCount: periodOrders.length,
-      totals: {
-        currentTotalPrice: +totalCurrent.toFixed(2),
-        originalTotalPrice: +totalOriginal.toFixed(2),
-        subtotal: +totalSubtotal.toFixed(2),
-        shipping_beforeDiscounts: +totalShipping.toFixed(2),
-        actualShipping: +actualShippingTotal.toFixed(2),
-        tax: +totalTax.toFixed(2),
-        discounts: +totalDiscounts.toFixed(2),
-        tips: +totalTips.toFixed(2),
-        refunded: +totalRefunded.toFixed(2),
-        refundsByRefundDate: +refundsByRefundDate.toFixed(2),
-        formula_subtotal_plus_tax: +(totalSubtotal + totalTax).toFixed(2),
-        formula_subtotal_plus_shipping_plus_tax: +(totalSubtotal + actualShippingTotal + totalTax).toFixed(2),
-        formula_current_minus_tax: +(totalCurrent - totalTax).toFixed(2),
-        formula_current_minus_shipping: +(totalCurrent - actualShippingTotal).toFixed(2),
-        formula_current_minus_tips: +(totalCurrent - totalTips).toFixed(2),
-        formula_current_minus_refundsByDate: +(totalCurrent - refundsByRefundDate).toFixed(2),
-      },
-      refundsInPeriod: refundDetails,
-      shopifyql,
-      orders: breakdown,
-    });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-// ShopifyQL query to get EXACT "Total sales" from Shopify Analytics
-app.get('/api/debug/shopify-sales', async (req, res) => {
-  try {
-    const days = parseInt(req.query.days || '7', 10);
-    const storeTZ = await getStoreTimezone();
-    const todayStr = dateInTZ(new Date(), storeTZ);
-    const [y, m, d] = todayStr.split('-').map(Number);
-    const startDate = new Date(Date.UTC(y, m - 1, d - days));
-    const startStr = startDate.toISOString().split('T')[0];
-
-    const query = `{
-      shopifyqlQuery(query: "FROM sales SHOW total_sales, net_sales, gross_sales, discounts, returns, taxes, shipping BY day SINCE '${startStr}' UNTIL '${todayStr}' ORDER BY day ASC") {
-        __typename
-        ... on TableResponse {
-          tableData { rowData columns { name dataType } }
-        }
-        ... on PolarisVizResponse {
-          data { key data { key value } }
-        }
-      }
-    }`;
-
-    const result = await shopifyGraphQL(query);
-    res.json({ storeTZ, todayStr, startStr, days, result });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
 
 // ─── DASHBOARD ─────────────────────────────────
 
@@ -1054,10 +930,12 @@ app.get('/api/dashboard', async (req, res) => {
     // Exclude test orders, cancelled orders, and voided orders
     const isSaleOrder = o => !o.test && !o.cancelledAt && o.displayFinancialStatus !== 'VOIDED';
 
-    let periodOrders;
+    let periodOrders, cutoffStr;
     if (revPeriod === 'today') {
+      cutoffStr = todayStr;
       periodOrders = orders.filter(o => isSaleOrder(o) && dateInTZ(o.createdAt, storeTZ) === todayStr);
     } else if (revPeriod === 'yesterday') {
+      cutoffStr = yesterdayStr;
       periodOrders = orders.filter(o => isSaleOrder(o) && dateInTZ(o.createdAt, storeTZ) === yesterdayStr);
     } else {
       // "Last N days" in Shopify = today + N previous days (e.g. Last 7 = Mar 13-20 = 8 dates)
@@ -1065,13 +943,31 @@ app.get('/api/dashboard', async (req, res) => {
       const days = parseInt(revPeriod, 10) || 30;
       const [y, m, d] = todayStr.split('-').map(Number);
       const startDate = new Date(Date.UTC(y, m - 1, d - days));
-      const cutoffStr = startDate.toISOString().split('T')[0]; // YYYY-MM-DD
+      cutoffStr = startDate.toISOString().split('T')[0]; // YYYY-MM-DD
       periodOrders = orders.filter(o => isSaleOrder(o) && dateInTZ(o.createdAt, storeTZ) >= cutoffStr);
     }
-    // Use currentTotalPriceSet — reflects refunds + order edits (matches Shopify "Total sales")
-    const revenue = periodOrders.reduce((s, o) => {
+
+    // Shopify "Total sales" uses currentTotalPriceSet but:
+    //   1. Excludes tips
+    //   2. Attributes refunds by REFUND DATE, not order creation date
+    // So we subtract tips and also subtract refunds that occurred in the period
+    // for orders that were created OUTSIDE the period.
+    const periodOrderIds = new Set(periodOrders.map(o => o.id));
+    let outOfPeriodRefunds = 0;
+    for (const o of orders) {
+      if (o.test || periodOrderIds.has(o.id)) continue;
+      for (const r of (o.refunds || [])) {
+        const refundDate = dateInTZ(r.createdAt, storeTZ);
+        if (refundDate >= cutoffStr && refundDate <= todayStr) {
+          outOfPeriodRefunds += parseFloat(r.totalRefundedSet?.shopMoney?.amount || 0);
+        }
+      }
+    }
+    const grossRevenue = periodOrders.reduce((s, o) => {
       return s + parseFloat(o.currentTotalPriceSet?.shopMoney?.amount || o.totalPriceSet?.shopMoney?.amount || 0);
     }, 0);
+    const tips = periodOrders.reduce((s, o) => s + parseFloat(o.totalTipReceivedSet?.shopMoney?.amount || 0), 0);
+    const revenue = grossRevenue - tips - outOfPeriodRefunds;
     const periodOrderCount = periodOrders.length;
 
     const velocityCounts = { 'FAST MOVER': 0, 'REGULAR': 0, 'SLOW MOVER': 0, 'NO SALES': 0 };
@@ -1092,7 +988,21 @@ app.get('/api/dashboard', async (req, res) => {
       if (!isSaleOrder(o)) return;
       const d = dateInTZ(o.createdAt, storeTZ);
       if (revByDay[d] !== undefined) {
-        revByDay[d] += parseFloat(o.currentTotalPriceSet?.shopMoney?.amount || o.totalPriceSet?.shopMoney?.amount || 0);
+        const orderRev = parseFloat(o.currentTotalPriceSet?.shopMoney?.amount || o.totalPriceSet?.shopMoney?.amount || 0);
+        const orderTips = parseFloat(o.totalTipReceivedSet?.shopMoney?.amount || 0);
+        revByDay[d] += orderRev - orderTips;
+      }
+    });
+    // Attribute refunds to chart by refund date (for orders whose creation date is outside chart range)
+    orders.forEach(o => {
+      if (o.test) return;
+      const orderDay = dateInTZ(o.createdAt, storeTZ);
+      if (revByDay[orderDay] !== undefined) return; // order already in chart range
+      for (const r of (o.refunds || [])) {
+        const refundDay = dateInTZ(r.createdAt, storeTZ);
+        if (revByDay[refundDay] !== undefined) {
+          revByDay[refundDay] -= parseFloat(r.totalRefundedSet?.shopMoney?.amount || 0);
+        }
       }
     });
 
