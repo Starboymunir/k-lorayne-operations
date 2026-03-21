@@ -931,9 +931,12 @@ app.get('/api/dashboard', async (req, res) => {
     } else if (revPeriod === 'yesterday') {
       periodOrders = orders.filter(o => isSaleOrder(o) && dateInTZ(o.createdAt, storeTZ) === yesterdayStr);
     } else {
+      // "Last N days" = today + (N-1) previous days = N calendar days in store timezone
+      // Derive cutoff from store-timezone today string (not UTC ms) to avoid DST/timezone drift
       const days = parseInt(revPeriod, 10) || 30;
-      const cutoff = new Date(now.getTime() - days * 86400000);
-      const cutoffStr = dateInTZ(cutoff, storeTZ);
+      const [y, m, d] = todayStr.split('-').map(Number);
+      const startDate = new Date(Date.UTC(y, m - 1, d - (days - 1)));
+      const cutoffStr = startDate.toISOString().split('T')[0]; // YYYY-MM-DD
       periodOrders = orders.filter(o => isSaleOrder(o) && dateInTZ(o.createdAt, storeTZ) >= cutoffStr);
     }
     // Use currentTotalPriceSet — reflects refunds + order edits (matches Shopify "Total sales")
@@ -951,9 +954,10 @@ app.get('/api/dashboard', async (req, res) => {
     // Revenue trend — uses store timezone for date grouping
     const chartDays = revPeriod === 'today' ? 1 : revPeriod === 'yesterday' ? 1 : Math.min(parseInt(revPeriod, 10) || 30, 30);
     const revByDay = {};
+    const [ty, tm, td] = todayStr.split('-').map(Number);
     for (let i = chartDays - 1; i >= 0; i--) {
-      const d = dateInTZ(new Date(Date.now() - i * 86400000), storeTZ);
-      revByDay[d] = 0;
+      const dd = new Date(Date.UTC(ty, tm - 1, td - i));
+      revByDay[dd.toISOString().split('T')[0]] = 0;
     }
     orders.forEach(o => {
       if (!isSaleOrder(o)) return;
