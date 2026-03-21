@@ -116,6 +116,7 @@ const ORDERS_QUERY = `
           totalTaxSet { shopMoney { amount } }
           totalDiscountsSet { shopMoney { amount } }
           totalTipReceivedSet { shopMoney { amount } }
+          refunds(first: 10) { createdAt totalRefundedSet { shopMoney { amount } } }
           customer { id displayName email phone }
           shippingAddress { city province country }
           lineItems(first: 100) {
@@ -939,6 +940,38 @@ app.get('/api/debug/revenue', async (req, res) => {
       };
     });
     const actualShippingTotal = totalCurrent - totalSubtotal - totalTax + totalDiscounts;
+
+    // Also try ShopifyQL for exact Shopify analytics numbers
+    let shopifyql = null;
+    try {
+      const sqlQuery = `{
+        shopifyqlQuery(query: "FROM sales SHOW total_sales, net_sales, gross_sales, discounts, returns, taxes, shipping BY day SINCE '${cutoffStr}' UNTIL '${todayStr}' ORDER BY day ASC") {
+          __typename
+          ... on TableResponse { tableData { rowData columns { name dataType } } }
+          ... on PolarisVizResponse { data { key data { key value } } }
+        }
+      }`;
+      shopifyql = await shopifyGraphQL(sqlQuery);
+    } catch (sqle) { shopifyql = { error: sqle.message }; }
+
+    // Also check refunds by REFUND DATE across all orders
+    let refundsByRefundDate = 0;
+    const refundDetails = [];
+    for (const o of orders) {
+      if (o.test) continue;
+      const refunds = o.refunds || [];
+      for (const r of refunds) {
+        const refundDate = dateInTZ(r.createdAt, storeTZ);
+        if (refundDate >= cutoffStr && refundDate <= todayStr) {
+          const amt = r.totalRefundedSet
+            ? parseFloat(r.totalRefundedSet.shopMoney?.amount || 0)
+            : 0;
+          refundsByRefundDate += amt;
+          refundDetails.push({ order: o.name, orderDate: dateInTZ(o.createdAt, storeTZ), refundDate, amount: amt });
+        }
+      }
+    }
+
     res.json({
       storeTZ, todayStr, cutoffStr, revPeriod: `Last ${days} days`,
       orderCount: periodOrders.length,
@@ -952,12 +985,16 @@ app.get('/api/debug/revenue', async (req, res) => {
         discounts: +totalDiscounts.toFixed(2),
         tips: +totalTips.toFixed(2),
         refunded: +totalRefunded.toFixed(2),
+        refundsByRefundDate: +refundsByRefundDate.toFixed(2),
         formula_subtotal_plus_tax: +(totalSubtotal + totalTax).toFixed(2),
         formula_subtotal_plus_shipping_plus_tax: +(totalSubtotal + actualShippingTotal + totalTax).toFixed(2),
         formula_current_minus_tax: +(totalCurrent - totalTax).toFixed(2),
         formula_current_minus_shipping: +(totalCurrent - actualShippingTotal).toFixed(2),
         formula_current_minus_tips: +(totalCurrent - totalTips).toFixed(2),
+        formula_current_minus_refundsByDate: +(totalCurrent - refundsByRefundDate).toFixed(2),
       },
+      refundsInPeriod: refundDetails,
+      shopifyql,
       orders: breakdown,
     });
   } catch (e) { res.status(500).json({ error: e.message }); }
