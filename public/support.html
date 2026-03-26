@@ -1,0 +1,929 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Support | K.Lorayne Apparel</title>
+  <link rel="icon" type="image/png" href="/favicon.png">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --brand: #1a1a1a;
+      --brand-accent: #8b5cf6;
+      --brand-accent-soft: rgba(139, 92, 246, 0.08);
+      --bg: #f9f9fb;
+      --white: #ffffff;
+      --text: #1a1a2e;
+      --text-dim: #555568;
+      --text-muted: #8e8ea0;
+      --border: #e5e5ee;
+      --radius: 12px;
+      --radius-sm: 8px;
+      --green: #22c55e;
+      --green-soft: rgba(34, 197, 94, 0.1);
+      --red: #ef4444;
+      --red-soft: rgba(239, 68, 68, 0.08);
+      --orange: #f97316;
+      --orange-soft: rgba(249, 115, 22, 0.08);
+      --blue: #3b82f6;
+      --blue-soft: rgba(59, 130, 246, 0.08);
+      --yellow: #eab308;
+      --yellow-soft: rgba(234, 179, 8, 0.08);
+      --shadow: 0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04);
+      --shadow-lg: 0 4px 16px rgba(0,0,0,0.08);
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* ─── HEADER ─── */
+    .header {
+      background: var(--white);
+      border-bottom: 1px solid var(--border);
+      padding: 16px 24px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .header-inner {
+      width: 100%;
+      max-width: 720px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .header-logo { height: 40px; }
+    .header-link {
+      font-size: 13px;
+      color: var(--text-dim);
+      text-decoration: none;
+    }
+    .header-link:hover { color: var(--brand-accent); }
+
+    /* ─── MAIN ─── */
+    .main {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 32px 16px 48px;
+    }
+    .container {
+      width: 100%;
+      max-width: 720px;
+    }
+    .page-heading {
+      text-align: center;
+      margin-bottom: 32px;
+    }
+    .page-heading h1 {
+      font-size: 26px;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      margin-bottom: 8px;
+    }
+    .page-heading p {
+      font-size: 15px;
+      color: var(--text-dim);
+      line-height: 1.5;
+    }
+
+    /* ─── TABS ─── */
+    .tabs {
+      display: flex;
+      gap: 4px;
+      background: var(--white);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 4px;
+      margin-bottom: 24px;
+      box-shadow: var(--shadow);
+    }
+    .tab-btn {
+      flex: 1;
+      padding: 10px 16px;
+      background: transparent;
+      border: none;
+      border-radius: var(--radius-sm);
+      font-size: 14px;
+      font-weight: 500;
+      color: var(--text-dim);
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .tab-btn:hover { background: var(--bg); }
+    .tab-btn.active {
+      background: var(--brand-accent);
+      color: white;
+      box-shadow: 0 1px 3px rgba(139, 92, 246, 0.3);
+    }
+
+    /* ─── CARD ─── */
+    .card {
+      background: var(--white);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+    .card-body { padding: 24px; }
+
+    /* ─── FORMS ─── */
+    .form-group { margin-bottom: 18px; }
+    .form-label {
+      display: block;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text);
+      margin-bottom: 6px;
+    }
+    .form-label .optional {
+      font-weight: 400;
+      color: var(--text-muted);
+      font-size: 12px;
+    }
+    .form-input {
+      width: 100%;
+      padding: 10px 14px;
+      font-size: 14px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      background: var(--white);
+      color: var(--text);
+      transition: border-color 0.2s, box-shadow 0.2s;
+      font-family: inherit;
+    }
+    .form-input:focus {
+      outline: none;
+      border-color: var(--brand-accent);
+      box-shadow: 0 0 0 3px var(--brand-accent-soft);
+    }
+    .form-input::placeholder { color: var(--text-muted); }
+    textarea.form-input { resize: vertical; min-height: 100px; line-height: 1.5; }
+    select.form-input { cursor: pointer; }
+    .form-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+    }
+    .form-hint {
+      font-size: 12px;
+      color: var(--text-muted);
+      margin-top: 4px;
+    }
+
+    /* ─── BUTTONS ─── */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      padding: 10px 20px;
+      font-size: 14px;
+      font-weight: 600;
+      border: none;
+      border-radius: var(--radius-sm);
+      cursor: pointer;
+      transition: all 0.2s;
+      font-family: inherit;
+    }
+    .btn-primary {
+      background: var(--brand-accent);
+      color: white;
+      box-shadow: 0 1px 3px rgba(139, 92, 246, 0.3);
+    }
+    .btn-primary:hover { background: #7c3aed; }
+    .btn-primary:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+    .btn-secondary {
+      background: var(--bg);
+      color: var(--text);
+      border: 1px solid var(--border);
+    }
+    .btn-secondary:hover { background: #eeeef4; }
+    .btn-block { width: 100%; }
+
+    /* ─── ALERTS ─── */
+    .alert {
+      padding: 14px 16px;
+      border-radius: var(--radius-sm);
+      font-size: 14px;
+      line-height: 1.5;
+      margin-bottom: 20px;
+      display: none;
+    }
+    .alert.show { display: block; }
+    .alert-success {
+      background: var(--green-soft);
+      color: #166534;
+      border: 1px solid rgba(34, 197, 94, 0.2);
+    }
+    .alert-error {
+      background: var(--red-soft);
+      color: #991b1b;
+      border: 1px solid rgba(239, 68, 68, 0.15);
+    }
+
+    /* ─── TICKET LIST ─── */
+    .ticket-list { list-style: none; }
+    .ticket-item {
+      padding: 16px 20px;
+      border-bottom: 1px solid var(--border);
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+    .ticket-item:last-child { border-bottom: none; }
+    .ticket-item:hover { background: var(--bg); }
+    .ticket-item-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      margin-bottom: 6px;
+      gap: 12px;
+    }
+    .ticket-item-id {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--brand-accent);
+      font-family: monospace;
+    }
+    .ticket-item-subject {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--text);
+      flex: 1;
+    }
+    .ticket-item-meta {
+      display: flex;
+      gap: 12px;
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+
+    /* ─── BADGES ─── */
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      padding: 3px 10px;
+      font-size: 11px;
+      font-weight: 600;
+      border-radius: 20px;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+      white-space: nowrap;
+    }
+    .badge-open { background: var(--blue-soft); color: var(--blue); }
+    .badge-in_progress { background: var(--orange-soft); color: var(--orange); }
+    .badge-waiting { background: var(--yellow-soft); color: #a16207; }
+    .badge-resolved { background: var(--green-soft); color: #166534; }
+    .badge-closed { background: #f1f1f5; color: var(--text-muted); }
+
+    /* ─── TICKET DETAIL VIEW ─── */
+    .ticket-detail-header {
+      padding: 20px 24px;
+      border-bottom: 1px solid var(--border);
+    }
+    .ticket-detail-header h2 {
+      font-size: 18px;
+      font-weight: 700;
+      margin-bottom: 4px;
+      line-height: 1.3;
+    }
+    .detail-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      align-items: center;
+      margin-top: 10px;
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+    .detail-meta span { display: flex; align-items: center; gap: 4px; }
+
+    .ticket-description {
+      padding: 20px 24px;
+      border-bottom: 1px solid var(--border);
+      font-size: 14px;
+      color: var(--text-dim);
+      line-height: 1.6;
+      white-space: pre-wrap;
+    }
+
+    /* ─── CONVERSATION THREAD ─── */
+    .thread { border-bottom: 1px solid var(--border); }
+    .thread-header {
+      padding: 12px 24px;
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      border-bottom: 1px solid var(--border);
+      background: var(--bg);
+    }
+    .thread-msg {
+      padding: 16px 24px;
+      border-bottom: 1px solid var(--border);
+    }
+    .thread-msg:last-child { border-bottom: none; }
+    .thread-msg-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 8px;
+    }
+    .thread-msg-author {
+      font-size: 13px;
+      font-weight: 600;
+    }
+    .thread-msg-author.staff { color: var(--brand-accent); }
+    .thread-msg-time {
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+    .thread-msg-body {
+      font-size: 14px;
+      color: var(--text-dim);
+      line-height: 1.6;
+      white-space: pre-wrap;
+    }
+    .thread-msg .msg-badge {
+      display: inline-block;
+      font-size: 10px;
+      font-weight: 600;
+      padding: 1px 6px;
+      border-radius: 4px;
+      margin-left: 6px;
+      text-transform: uppercase;
+    }
+    .msg-badge.reply { background: var(--blue-soft); color: var(--blue); }
+    .msg-badge.system { background: #f1f1f5; color: var(--text-muted); }
+
+    /* ─── REPLY BOX ─── */
+    .reply-box { padding: 20px 24px; }
+    .reply-box h3 {
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 12px;
+    }
+    .reply-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+      margin-top: 12px;
+    }
+
+    /* ─── EMPTY STATE ─── */
+    .empty-state {
+      text-align: center;
+      padding: 48px 24px;
+      color: var(--text-muted);
+    }
+    .empty-state svg { margin-bottom: 16px; opacity: 0.4; }
+    .empty-state p { font-size: 14px; line-height: 1.5; }
+
+    /* ─── BACK BUTTON ─── */
+    .back-link {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 13px;
+      color: var(--text-dim);
+      text-decoration: none;
+      margin-bottom: 16px;
+      cursor: pointer;
+    }
+    .back-link:hover { color: var(--brand-accent); }
+
+    /* ─── SPINNER ─── */
+    .spinner {
+      width: 20px;
+      height: 20px;
+      border: 2px solid var(--border);
+      border-top-color: var(--brand-accent);
+      border-radius: 50%;
+      animation: spin 0.6s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .loading-inline {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      padding: 32px;
+      font-size: 14px;
+      color: var(--text-muted);
+    }
+
+    /* ─── SUCCESS SCREEN ─── */
+    .success-screen {
+      text-align: center;
+      padding: 40px 24px;
+    }
+    .success-icon {
+      width: 64px;
+      height: 64px;
+      background: var(--green-soft);
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin: 0 auto 20px;
+    }
+    .success-screen h2 {
+      font-size: 22px;
+      font-weight: 700;
+      margin-bottom: 8px;
+    }
+    .success-screen p {
+      font-size: 14px;
+      color: var(--text-dim);
+      line-height: 1.5;
+      margin-bottom: 6px;
+    }
+    .ticket-id-display {
+      display: inline-block;
+      font-family: monospace;
+      font-size: 18px;
+      font-weight: 700;
+      color: var(--brand-accent);
+      background: var(--brand-accent-soft);
+      padding: 8px 20px;
+      border-radius: var(--radius-sm);
+      margin: 16px 0;
+      letter-spacing: 0.05em;
+    }
+
+    /* ─── FOOTER ─── */
+    .footer {
+      text-align: center;
+      padding: 20px;
+      font-size: 12px;
+      color: var(--text-muted);
+      border-top: 1px solid var(--border);
+    }
+    .footer a { color: var(--text-dim); text-decoration: none; }
+    .footer a:hover { color: var(--brand-accent); }
+
+    /* ─── RESPONSIVE ─── */
+    @media (max-width: 600px) {
+      .form-row { grid-template-columns: 1fr; }
+      .main { padding: 20px 12px 40px; }
+      .card-body { padding: 18px; }
+      .page-heading h1 { font-size: 22px; }
+      .ticket-detail-header { padding: 16px 18px; }
+      .ticket-description, .thread-header, .thread-msg, .reply-box { padding-left: 18px; padding-right: 18px; }
+      .tabs { flex-direction: column; }
+      .detail-meta { flex-direction: column; gap: 6px; }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- HEADER -->
+  <header class="header">
+    <div class="header-inner">
+      <a href="https://kloapparel.com" target="_blank" rel="noopener">
+        <img src="/logo_with_words_centered_COLOR_copy_copy.webp" alt="K.Lorayne Apparel" class="header-logo">
+      </a>
+      <a href="https://kloapparel.com" class="header-link" target="_blank" rel="noopener">← Back to Store</a>
+    </div>
+  </header>
+
+  <!-- MAIN -->
+  <main class="main">
+    <div class="container">
+
+      <div class="page-heading">
+        <h1>How can we help?</h1>
+        <p>Submit a support request or check the status of an existing ticket.</p>
+      </div>
+
+      <!-- TABS -->
+      <div class="tabs">
+        <button class="tab-btn active" data-tab="submit" onclick="switchTab('submit')">Submit a Request</button>
+        <button class="tab-btn" data-tab="track" onclick="switchTab('track')">Track Your Ticket</button>
+      </div>
+
+      <!-- ═══ TAB: SUBMIT ═══ -->
+      <div id="tab-submit" class="tab-panel">
+        <div id="submitAlert" class="alert"></div>
+        <div class="card">
+          <div class="card-body">
+            <form id="ticketForm" onsubmit="return handleSubmit(event)">
+              <div class="form-row">
+                <div class="form-group">
+                  <label class="form-label" for="name">Full Name</label>
+                  <input class="form-input" type="text" id="name" placeholder="Jane Doe" required maxlength="100">
+                </div>
+                <div class="form-group">
+                  <label class="form-label" for="email">Email Address</label>
+                  <input class="form-input" type="email" id="email" placeholder="jane@example.com" required maxlength="254">
+                </div>
+              </div>
+
+              <div class="form-row">
+                <div class="form-group">
+                  <label class="form-label" for="category">Category</label>
+                  <select class="form-input" id="category">
+                    <option value="general">General Inquiry</option>
+                    <option value="order_status">Order Status</option>
+                    <option value="shipping">Shipping</option>
+                    <option value="returns">Returns & Exchanges</option>
+                    <option value="sizing">Sizing Help</option>
+                    <option value="damage">Damaged Item</option>
+                  </select>
+                </div>
+                <div class="form-group">
+                  <label class="form-label" for="orderNumber">Order Number <span class="optional">(optional)</span></label>
+                  <input class="form-input" type="text" id="orderNumber" placeholder="#1001" maxlength="50">
+                </div>
+              </div>
+
+              <div class="form-group">
+                <label class="form-label" for="subject">Subject</label>
+                <input class="form-input" type="text" id="subject" placeholder="Brief summary of your issue" required maxlength="200">
+              </div>
+
+              <div class="form-group">
+                <label class="form-label" for="description">Description</label>
+                <textarea class="form-input" id="description" placeholder="Please describe your issue in detail so we can help you as quickly as possible..." required maxlength="5000" rows="5"></textarea>
+                <p class="form-hint"><span id="charCount">0</span> / 5,000 characters</p>
+              </div>
+
+              <button type="submit" class="btn btn-primary btn-block" id="submitBtn">Submit Request</button>
+            </form>
+          </div>
+        </div>
+      </div>
+
+      <!-- ═══ TAB: TRACK ═══ -->
+      <div id="tab-track" class="tab-panel" style="display:none">
+        <div id="trackAlert" class="alert"></div>
+
+        <!-- Lookup Form -->
+        <div id="lookupView" class="card">
+          <div class="card-body">
+            <p style="font-size:14px;color:var(--text-dim);margin-bottom:18px;">
+              Look up your support tickets by entering the email address you used when submitting your request.
+              If you have a ticket ID, enter it for faster results.
+            </p>
+            <form onsubmit="return handleLookup(event)">
+              <div class="form-row">
+                <div class="form-group">
+                  <label class="form-label" for="lookupEmail">Email Address</label>
+                  <input class="form-input" type="email" id="lookupEmail" placeholder="jane@example.com" required maxlength="254">
+                </div>
+                <div class="form-group">
+                  <label class="form-label" for="lookupTicketId">Ticket ID <span class="optional">(optional)</span></label>
+                  <input class="form-input" type="text" id="lookupTicketId" placeholder="TK-XXXXXXXX" maxlength="20">
+                </div>
+              </div>
+              <button type="submit" class="btn btn-primary btn-block" id="lookupBtn">Find Tickets</button>
+            </form>
+          </div>
+        </div>
+
+        <!-- Ticket List -->
+        <div id="listView" style="display:none">
+          <a class="back-link" onclick="showLookup()">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 18l-6-6 6-6"/></svg>
+            New search
+          </a>
+          <div class="card" id="ticketListCard"></div>
+        </div>
+
+        <!-- Ticket Detail -->
+        <div id="detailView" style="display:none">
+          <a class="back-link" id="detailBackLink" onclick="goBackFromDetail()">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 18l-6-6 6-6"/></svg>
+            Back to tickets
+          </a>
+          <div class="card" id="ticketDetailCard"></div>
+        </div>
+      </div>
+
+    </div>
+  </main>
+
+  <!-- FOOTER -->
+  <footer class="footer">
+    &copy; 2025 <a href="https://kloapparel.com" target="_blank" rel="noopener">K.Lorayne Apparel</a>. All rights reserved.
+  </footer>
+
+  <script>
+    /* ─── STATE ─── */
+    let _lookupEmail = '';
+    let _ticketList = [];
+    let _cameFromList = false;
+
+    /* ─── HELPERS ─── */
+    const $ = id => document.getElementById(id);
+    const esc = s => {
+      const d = document.createElement('div');
+      d.textContent = s;
+      return d.innerHTML;
+    };
+
+    function showAlert(id, type, msg) {
+      const el = $(id);
+      el.className = 'alert alert-' + type + ' show';
+      el.textContent = msg;
+    }
+    function hideAlert(id) {
+      const el = $(id);
+      el.className = 'alert';
+      el.textContent = '';
+    }
+
+    function statusBadge(status) {
+      const labels = { open: 'Open', in_progress: 'In Progress', waiting: 'Waiting', resolved: 'Resolved', closed: 'Closed' };
+      return '<span class="badge badge-' + esc(status) + '">' + (labels[status] || status) + '</span>';
+    }
+
+    function fmtDate(iso) {
+      if (!iso) return '—';
+      const d = new Date(iso);
+      return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+    }
+    function fmtDateTime(iso) {
+      if (!iso) return '—';
+      const d = new Date(iso);
+      return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) + ' at ' +
+        d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+    }
+
+    function categoryLabel(cat) {
+      const m = { general: 'General', order_status: 'Order Status', shipping: 'Shipping', returns: 'Returns & Exchanges', sizing: 'Sizing', damage: 'Damaged Item' };
+      return m[cat] || cat;
+    }
+
+    /* ─── TABS ─── */
+    function switchTab(tab) {
+      document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
+      $('tab-submit').style.display = tab === 'submit' ? '' : 'none';
+      $('tab-track').style.display = tab === 'track' ? '' : 'none';
+      hideAlert('submitAlert');
+      hideAlert('trackAlert');
+    }
+
+    /* ─── SUBMIT TICKET ─── */
+    $('description').addEventListener('input', function() {
+      $('charCount').textContent = this.value.length;
+    });
+
+    async function handleSubmit(e) {
+      e.preventDefault();
+      hideAlert('submitAlert');
+      const btn = $('submitBtn');
+      btn.disabled = true;
+      btn.textContent = 'Submitting...';
+
+      try {
+        const payload = {
+          name: $('name').value.trim(),
+          email: $('email').value.trim(),
+          category: $('category').value,
+          subject: $('subject').value.trim(),
+          description: $('description').value.trim(),
+          orderNumber: $('orderNumber').value.trim() || undefined,
+        };
+
+        const res = await fetch('/api/public/tickets', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        const data = await res.json();
+
+        if (!res.ok) throw new Error(data.error || 'Something went wrong.');
+
+        // Show success
+        $('tab-submit').innerHTML =
+          '<div class="card"><div class="success-screen">' +
+            '<div class="success-icon"><svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#22c55e" stroke-width="2.5"><path d="M20 6L9 17l-5-5"/></svg></div>' +
+            '<h2>Request Submitted!</h2>' +
+            '<p>Your support ticket has been created. Our team will review it and get back to you.</p>' +
+            '<div class="ticket-id-display">' + esc(data.ticketId) + '</div>' +
+            '<p style="font-size:13px;color:var(--text-muted);">Save this ticket ID to track your request.</p>' +
+            '<div style="margin-top:24px;display:flex;gap:10px;justify-content:center;flex-wrap:wrap;">' +
+              '<button class="btn btn-primary" onclick="switchTab(\'track\')">Track My Ticket</button>' +
+              '<button class="btn btn-secondary" onclick="location.reload()">Submit Another</button>' +
+            '</div>' +
+          '</div></div>';
+      } catch (err) {
+        showAlert('submitAlert', 'error', err.message);
+        btn.disabled = false;
+        btn.textContent = 'Submit Request';
+      }
+    }
+
+    /* ─── TICKET LOOKUP ─── */
+    function showLookup() {
+      $('lookupView').style.display = '';
+      $('listView').style.display = 'none';
+      $('detailView').style.display = 'none';
+      hideAlert('trackAlert');
+    }
+
+    async function handleLookup(e) {
+      e.preventDefault();
+      hideAlert('trackAlert');
+      const btn = $('lookupBtn');
+      btn.disabled = true;
+      btn.textContent = 'Searching...';
+      _lookupEmail = $('lookupEmail').value.trim();
+      const ticketId = $('lookupTicketId').value.trim();
+
+      try {
+        let url = '/api/public/tickets/lookup?email=' + encodeURIComponent(_lookupEmail);
+        if (ticketId) url += '&ticketId=' + encodeURIComponent(ticketId);
+
+        const res = await fetch(url);
+        const data = await res.json();
+
+        if (!res.ok) throw new Error(data.error || 'Something went wrong.');
+
+        if (data.ticket) {
+          // Single ticket lookup → go straight to detail
+          _cameFromList = false;
+          renderTicketDetail(data.ticket);
+        } else if (data.tickets && data.tickets.length > 0) {
+          _ticketList = data.tickets;
+          _cameFromList = true;
+          renderTicketList(data.tickets);
+        } else {
+          showAlert('trackAlert', 'error', 'No tickets found for this email address.');
+        }
+      } catch (err) {
+        showAlert('trackAlert', 'error', err.message);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'Find Tickets';
+      }
+    }
+
+    /* ─── RENDER TICKET LIST ─── */
+    function renderTicketList(tickets) {
+      $('lookupView').style.display = 'none';
+      $('listView').style.display = '';
+      $('detailView').style.display = 'none';
+
+      if (tickets.length === 0) {
+        $('ticketListCard').innerHTML =
+          '<div class="empty-state"><p>No tickets found.</p></div>';
+        return;
+      }
+
+      $('ticketListCard').innerHTML =
+        '<ul class="ticket-list">' +
+        tickets.map(t =>
+          '<li class="ticket-item" onclick="loadTicketDetail(\'' + esc(t.id) + '\')">' +
+            '<div class="ticket-item-header">' +
+              '<span class="ticket-item-id">' + esc(t.id) + '</span>' +
+              statusBadge(t.status) +
+            '</div>' +
+            '<div class="ticket-item-subject">' + esc(t.subject) + '</div>' +
+            '<div class="ticket-item-meta">' +
+              '<span>' + categoryLabel(t.category) + '</span>' +
+              '<span>' + fmtDate(t.createdAt) + '</span>' +
+            '</div>' +
+          '</li>'
+        ).join('') +
+        '</ul>';
+    }
+
+    /* ─── LOAD SINGLE TICKET ─── */
+    async function loadTicketDetail(ticketId) {
+      $('lookupView').style.display = 'none';
+      $('listView').style.display = 'none';
+      $('detailView').style.display = '';
+      $('ticketDetailCard').innerHTML = '<div class="loading-inline"><div class="spinner"></div> Loading ticket...</div>';
+
+      try {
+        const res = await fetch('/api/public/tickets/lookup?email=' + encodeURIComponent(_lookupEmail) + '&ticketId=' + encodeURIComponent(ticketId));
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Ticket not found.');
+        renderTicketDetail(data.ticket);
+      } catch (err) {
+        $('ticketDetailCard').innerHTML =
+          '<div class="empty-state"><p>' + esc(err.message) + '</p></div>';
+      }
+    }
+
+    /* ─── RENDER TICKET DETAIL ─── */
+    function renderTicketDetail(ticket) {
+      $('lookupView').style.display = 'none';
+      $('listView').style.display = 'none';
+      $('detailView').style.display = '';
+
+      $('detailBackLink').onclick = function() { goBackFromDetail(); };
+
+      const messages = ticket.messages || [];
+      const isOpenish = ['open', 'in_progress', 'waiting'].includes(ticket.status);
+
+      $('ticketDetailCard').innerHTML =
+        '<div class="ticket-detail-header">' +
+          '<h2>' + esc(ticket.subject) + '</h2>' +
+          '<div class="detail-meta">' +
+            '<span>' + statusBadge(ticket.status) + '</span>' +
+            '<span>ID: <strong>' + esc(ticket.id) + '</strong></span>' +
+            '<span>' + categoryLabel(ticket.category) + '</span>' +
+            '<span>Opened ' + fmtDate(ticket.createdAt) + '</span>' +
+          '</div>' +
+        '</div>' +
+
+        // Original description
+        (ticket.description
+          ? '<div class="ticket-description">' + esc(ticket.description) + '</div>'
+          : '') +
+
+        // Conversation thread
+        (messages.length > 0
+          ? '<div class="thread">' +
+              '<div class="thread-header">Conversation (' + messages.length + ')</div>' +
+              messages.map(m => {
+                const isStaff = m.type === 'system' || (m.author && m.author !== ticket.customerName && m.author !== 'Customer');
+                return '<div class="thread-msg">' +
+                  '<div class="thread-msg-header">' +
+                    '<span class="thread-msg-author ' + (isStaff ? 'staff' : '') + '">' + esc(m.author || 'Support') +
+                      (m.type === 'system' ? ' <span class="msg-badge system">System</span>' : '') +
+                    '</span>' +
+                    '<span class="thread-msg-time">' + fmtDateTime(m.createdAt) + '</span>' +
+                  '</div>' +
+                  '<div class="thread-msg-body">' + esc(m.text) + '</div>' +
+                '</div>';
+              }).join('') +
+            '</div>'
+          : '') +
+
+        // Reply form
+        '<div class="reply-box">' +
+          '<h3>Add a Reply</h3>' +
+          '<div id="replyAlert" class="alert"></div>' +
+          '<textarea class="form-input" id="replyText" rows="4" placeholder="Type your message..." maxlength="5000"></textarea>' +
+          '<div class="reply-actions">' +
+            '<button class="btn btn-primary" id="replyBtn" onclick="handleReply(\'' + esc(ticket.id) + '\')">Send Reply</button>' +
+          '</div>' +
+        '</div>';
+    }
+
+    /* ─── HANDLE REPLY ─── */
+    async function handleReply(ticketId) {
+      const text = $('replyText').value.trim();
+      if (!text) return;
+      hideAlert('replyAlert');
+      const btn = $('replyBtn');
+      btn.disabled = true;
+      btn.textContent = 'Sending...';
+
+      try {
+        const res = await fetch('/api/public/tickets/' + encodeURIComponent(ticketId) + '/reply', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email: _lookupEmail, message: text }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Something went wrong.');
+
+        showAlert('replyAlert', 'success', 'Your reply has been sent.');
+        $('replyText').value = '';
+        // Reload ticket to show new message
+        setTimeout(() => loadTicketDetail(ticketId), 800);
+      } catch (err) {
+        showAlert('replyAlert', 'error', err.message);
+        btn.disabled = false;
+        btn.textContent = 'Send Reply';
+      }
+    }
+
+    /* ─── NAVIGATION ─── */
+    function goBackFromDetail() {
+      if (_cameFromList && _ticketList.length > 0) {
+        renderTicketList(_ticketList);
+      } else {
+        showLookup();
+      }
+    }
+
+    /* ─── URL PARAMS ─── */
+    (function() {
+      const params = new URLSearchParams(window.location.search);
+      const tab = params.get('tab');
+      if (tab === 'track') switchTab('track');
+    })();
+  </script>
+</body>
+</html>

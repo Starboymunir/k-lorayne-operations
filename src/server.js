@@ -2368,6 +2368,180 @@ app.get('/api/search', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// ─── PUBLIC CUSTOMER-FACING TICKET ENDPOINTS ─────────
+
+// Rate limit: simple in-memory tracker for public endpoints
+const _publicRateLimit = {};
+function checkPublicRateLimit(ip, limit = 5, windowMs = 60000) {
+  const now = Date.now();
+  if (!_publicRateLimit[ip]) _publicRateLimit[ip] = [];
+  _publicRateLimit[ip] = _publicRateLimit[ip].filter(t => now - t < windowMs);
+  if (_publicRateLimit[ip].length >= limit) return false;
+  _publicRateLimit[ip].push(now);
+  return true;
+}
+// Clean up rate-limit map every 10 minutes
+setInterval(() => {
+  const now = Date.now();
+  for (const ip of Object.keys(_publicRateLimit)) {
+    _publicRateLimit[ip] = _publicRateLimit[ip].filter(t => now - t < 60000);
+    if (_publicRateLimit[ip].length === 0) delete _publicRateLimit[ip];
+  }
+}, 600000);
+
+// Serve the support page
+app.get('/support', (req, res) => {
+  res.sendFile(join(__dirname, '..', 'public', 'support.html'));
+});
+
+// Customer submits a new ticket
+app.post('/api/public/tickets', (req, res) => {
+  try {
+    const ip = req.ip || req.connection?.remoteAddress || 'unknown';
+    if (!checkPublicRateLimit(ip)) {
+      return res.status(429).json({ error: 'Too many requests. Please wait a minute and try again.' });
+    }
+
+    const { name, email, category, subject, description, orderNumber } = req.body || {};
+
+    if (!name || !email || !subject || !description) {
+      return res.status(400).json({ error: 'Name, email, subject, and description are required.' });
+    }
+    if (typeof email !== 'string' || !email.includes('@') || email.length > 254) {
+      return res.status(400).json({ error: 'Please provide a valid email address.' });
+    }
+    if (subject.length > 200) {
+      return res.status(400).json({ error: 'Subject must be under 200 characters.' });
+    }
+    if (description.length > 5000) {
+      return res.status(400).json({ error: 'Description must be under 5000 characters.' });
+    }
+
+    const ticket = createTicket({
+      customerName: String(name).slice(0, 100),
+      customerEmail: String(email).slice(0, 254).toLowerCase(),
+      category: ['returns', 'shipping', 'sizing', 'damage', 'order_status', 'general'].includes(category) ? category : 'general',
+      priority: 'medium',
+      channel: 'website',
+      subject: String(subject).slice(0, 200),
+      description: String(description).slice(0, 5000),
+      orderName: orderNumber ? String(orderNumber).slice(0, 50) : null,
+    });
+
+    logActivity('System', 'public_ticket_created', `Customer submitted ticket via website: ${ticket.subject}`, {
+      ticketId: ticket.id, channel: 'website',
+    });
+
+    res.status(201).json({
+      success: true,
+      ticketId: ticket.id,
+      message: `Your ticket ${ticket.id} has been submitted. You'll receive a response at ${ticket.customerEmail}.`,
+    });
+  } catch (err) {
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// Customer looks up their ticket(s) by email + optional ticket ID
+app.get('/api/public/tickets/lookup', (req, res) => {
+  try {
+    const { email, ticketId } = req.query;
+
+    if (!email || typeof email !== 'string' || !email.includes('@')) {
+      return res.status(400).json({ error: 'Please provide a valid email address.' });
+    }
+
+    const normalizedEmail = email.toLowerCase().trim();
+
+    if (ticketId) {
+      const ticket = getTicketById(ticketId.toUpperCase());
+      if (!ticket || ticket.customerEmail.toLowerCase() !== normalizedEmail) {
+        return res.status(404).json({ error: 'Ticket not found. Check your ticket ID and email address.' });
+      }
+      // Return limited info (no internal notes)
+      return res.json({
+        ticket: {
+          id: ticket.id,
+          subject: ticket.subject,
+          description: ticket.description,
+          category: ticket.category,
+          status: ticket.status,
+          priority: ticket.priority,
+          createdAt: ticket.createdAt,
+          updatedAt: ticket.updatedAt,
+          messages: (ticket.notes || [])
+            .filter(n => n.type === 'reply' || n.type === 'system')
+            .map(n => ({
+              text: n.text,
+              author: n.author,
+              type: n.type,
+              createdAt: n.createdAt,
+            })),
+        },
+      });
+    }
+
+    // List all tickets for this email
+    const allTickets = getTickets({});
+    const customerTickets = allTickets
+      .filter(t => t.customerEmail.toLowerCase() === normalizedEmail)
+      .slice(0, 20)
+      .map(t => ({
+        id: t.id,
+        subject: t.subject,
+        status: t.status,
+        category: t.category,
+        createdAt: t.createdAt,
+        updatedAt: t.updatedAt,
+      }));
+
+    res.json({ tickets: customerTickets, total: customerTickets.length });
+  } catch (err) {
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// Customer adds a message to their ticket
+app.post('/api/public/tickets/:id/reply', (req, res) => {
+  try {
+    const ip = req.ip || req.connection?.remoteAddress || 'unknown';
+    if (!checkPublicRateLimit(ip, 10)) {
+      return res.status(429).json({ error: 'Too many requests. Please wait a minute and try again.' });
+    }
+
+    const { email, message } = req.body || {};
+
+    if (!email || !message) {
+      return res.status(400).json({ error: 'Email and message are required.' });
+    }
+    if (message.length > 5000) {
+      return res.status(400).json({ error: 'Message must be under 5000 characters.' });
+    }
+
+    const ticket = getTicketById(req.params.id.toUpperCase());
+    if (!ticket || ticket.customerEmail.toLowerCase() !== email.toLowerCase().trim()) {
+      return res.status(404).json({ error: 'Ticket not found. Check your ticket ID and email address.' });
+    }
+
+    const note = addTicketNote(ticket.id, {
+      text: String(message).slice(0, 5000),
+      author: ticket.customerName || 'Customer',
+      type: 'reply',
+    });
+
+    // Re-open ticket if it was resolved/closed
+    if (ticket.status === 'resolved' || ticket.status === 'closed') {
+      updateTicket(ticket.id, { status: 'open' });
+    }
+
+    logActivity('Customer', 'public_reply', `Customer replied to ticket ${ticket.id}`, { ticketId: ticket.id });
+
+    res.status(201).json({ success: true, message: 'Your reply has been added to the ticket.' });
+  } catch (err) {
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
 // ─── REFRESH & SPA FALLBACK ───────────────────
 
 app.post('/api/refresh', async (req, res) => {
