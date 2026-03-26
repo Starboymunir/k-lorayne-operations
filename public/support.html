@@ -466,6 +466,91 @@
       letter-spacing: 0.05em;
     }
 
+    /* ─── EXISTING TICKETS BANNER ─── */
+    .existing-tickets {
+      margin-top: 20px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--white);
+      overflow: hidden;
+      animation: slideDown 0.3s ease;
+    }
+    @keyframes slideDown {
+      from { opacity: 0; transform: translateY(-8px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    .existing-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 14px 18px;
+      background: var(--brand-accent-soft);
+      border-bottom: 1px solid var(--border);
+    }
+    .existing-header-left {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--text);
+    }
+    .existing-header-left .dot {
+      width: 8px; height: 8px;
+      background: var(--brand-accent);
+      border-radius: 50%;
+    }
+    .existing-header a {
+      font-size: 13px;
+      color: var(--brand-accent);
+      text-decoration: none;
+      font-weight: 500;
+    }
+    .existing-header a:hover { text-decoration: underline; }
+    .existing-mini-list { list-style: none; }
+    .existing-mini-item {
+      padding: 12px 18px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      cursor: pointer;
+      transition: background 0.15s;
+      font-size: 13px;
+    }
+    .existing-mini-item:last-child { border-bottom: none; }
+    .existing-mini-item:hover { background: var(--bg); }
+    .existing-mini-item .emi-left {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      min-width: 0;
+    }
+    .existing-mini-item .emi-id {
+      font-family: monospace;
+      font-size: 11px;
+      color: var(--brand-accent);
+      font-weight: 600;
+    }
+    .existing-mini-item .emi-subject {
+      font-weight: 500;
+      color: var(--text);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .existing-mini-item .emi-right {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-shrink: 0;
+    }
+    .existing-mini-item .emi-date {
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+
     /* ─── FOOTER ─── */
     .footer {
       text-align: center;
@@ -565,6 +650,8 @@
 
               <button type="submit" class="btn btn-primary btn-block" id="submitBtn">Submit Request</button>
             </form>
+            <!-- Existing tickets appear here when email is recognized -->
+            <div id="existingTickets"></div>
           </div>
         </div>
       </div>
@@ -628,6 +715,8 @@
     let _lookupEmail = '';
     let _ticketList = [];
     let _cameFromList = false;
+    let _recognizedTickets = [];
+    let _lastCheckedEmail = '';
 
     /* ─── HELPERS ─── */
     const $ = id => document.getElementById(id);
@@ -677,6 +766,86 @@
       $('tab-track').style.display = tab === 'track' ? '' : 'none';
       hideAlert('submitAlert');
       hideAlert('trackAlert');
+      // Sync email between tabs
+      if (tab === 'track' && _lookupEmail) {
+        $('lookupEmail').value = _lookupEmail;
+      }
+    }
+
+    /* ─── EMAIL RECOGNITION ─── */
+    let _emailLookupTimer = null;
+    $('email').addEventListener('input', function() {
+      clearTimeout(_emailLookupTimer);
+      const email = this.value.trim();
+      if (email.includes('@') && email.length > 5) {
+        _emailLookupTimer = setTimeout(() => checkExistingTickets(email), 600);
+      } else {
+        $('existingTickets').innerHTML = '';
+      }
+    });
+    $('email').addEventListener('blur', function() {
+      const email = this.value.trim();
+      if (email.includes('@') && email.length > 5 && email !== _lastCheckedEmail) {
+        checkExistingTickets(email);
+      }
+    });
+
+    async function checkExistingTickets(email) {
+      if (email === _lastCheckedEmail) return;
+      _lastCheckedEmail = email;
+      try {
+        const res = await fetch('/api/public/tickets/lookup?email=' + encodeURIComponent(email));
+        const data = await res.json();
+        if (!res.ok || !data.tickets || data.tickets.length === 0) {
+          $('existingTickets').innerHTML = '';
+          return;
+        }
+        _recognizedTickets = data.tickets;
+        _lookupEmail = email;
+
+        // Pre-fill name if empty
+        if (!$('name').value.trim() && data.tickets[0].customerName) {
+          $('name').value = data.tickets[0].customerName;
+        }
+
+        // Show inline banner
+        const count = data.tickets.length;
+        const open = data.tickets.filter(t => ['open','in_progress','waiting'].includes(t.status)).length;
+        $('existingTickets').innerHTML =
+          '<div class="existing-tickets">' +
+            '<div class="existing-header">' +
+              '<div class="existing-header-left">' +
+                '<span class="dot"></span>' +
+                'Welcome back! ' + count + ' existing ticket' + (count === 1 ? '' : 's') +
+                (open > 0 ? ' (' + open + ' open)' : '') +
+              '</div>' +
+              '<a href="#" onclick="viewAllExistingTickets();return false">View all →</a>' +
+            '</div>' +
+            '<ul class="existing-mini-list">' +
+              data.tickets.slice(0, 3).map(t =>
+                '<li class="existing-mini-item" onclick="viewExistingTicket(\'' + esc(t.id) + '\')"><div class="emi-left"><span class="emi-id">' + esc(t.id) + '</span><span class="emi-subject">' + esc(t.subject) + '</span></div><div class="emi-right">' + statusBadge(t.status) + '<span class="emi-date">' + fmtDate(t.createdAt) + '</span></div></li>'
+              ).join('') +
+              (count > 3 ? '<li class="existing-mini-item" onclick="viewAllExistingTickets()" style="justify-content:center;color:var(--brand-accent);font-weight:500">+ ' + (count - 3) + ' more ticket' + (count - 3 === 1 ? '' : 's') + '</li>' : '') +
+            '</ul>' +
+          '</div>';
+      } catch (e) {
+        // Silent fail — don't block the form
+      }
+    }
+
+    function viewExistingTicket(ticketId) {
+      _cameFromList = true;
+      switchTab('track');
+      $('lookupEmail').value = _lookupEmail;
+      loadTicketDetail(ticketId);
+    }
+
+    function viewAllExistingTickets() {
+      switchTab('track');
+      $('lookupEmail').value = _lookupEmail;
+      _ticketList = _recognizedTickets;
+      _cameFromList = true;
+      renderTicketList(_recognizedTickets);
     }
 
     /* ─── SUBMIT TICKET ─── */
@@ -710,7 +879,35 @@
 
         if (!res.ok) throw new Error(data.error || 'Something went wrong.');
 
-        // Show success
+        // Show success + existing tickets
+        _lookupEmail = payload.email;
+        let existingHtml = '';
+        try {
+          const lkRes = await fetch('/api/public/tickets/lookup?email=' + encodeURIComponent(payload.email));
+          const lkData = await lkRes.json();
+          if (lkRes.ok && lkData.tickets && lkData.tickets.length > 1) {
+            _ticketList = lkData.tickets;
+            const others = lkData.tickets.filter(t => t.id !== data.ticketId);
+            if (others.length > 0) {
+              existingHtml =
+                '<div style="margin-top:24px;text-align:left">' +
+                  '<div class="existing-tickets">' +
+                    '<div class="existing-header">' +
+                      '<div class="existing-header-left"><span class="dot"></span>Your other tickets</div>' +
+                      '<a href="#" onclick="viewAllExistingTickets();return false">View all →</a>' +
+                    '</div>' +
+                    '<ul class="existing-mini-list">' +
+                      others.slice(0, 3).map(t =>
+                        '<li class="existing-mini-item" onclick="viewExistingTicket(\'' + esc(t.id) + '\')"><div class="emi-left"><span class="emi-id">' + esc(t.id) + '</span><span class="emi-subject">' + esc(t.subject) + '</span></div><div class="emi-right">' + statusBadge(t.status) + '<span class="emi-date">' + fmtDate(t.createdAt) + '</span></div></li>'
+                      ).join('') +
+                      (others.length > 3 ? '<li class="existing-mini-item" onclick="viewAllExistingTickets()" style="justify-content:center;color:var(--brand-accent);font-weight:500">+ ' + (others.length - 3) + ' more</li>' : '') +
+                    '</ul>' +
+                  '</div>' +
+                '</div>';
+            }
+          }
+        } catch(e) {}
+
         $('tab-submit').innerHTML =
           '<div class="card"><div class="success-screen">' +
             '<div class="success-icon"><svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#22c55e" stroke-width="2.5"><path d="M20 6L9 17l-5-5"/></svg></div>' +
@@ -719,9 +916,10 @@
             '<div class="ticket-id-display">' + esc(data.ticketId) + '</div>' +
             '<p style="font-size:13px;color:var(--text-muted);">Save this ticket ID to track your request.</p>' +
             '<div style="margin-top:24px;display:flex;gap:10px;justify-content:center;flex-wrap:wrap;">' +
-              '<button class="btn btn-primary" onclick="switchTab(\'track\')">Track My Ticket</button>' +
+              '<button class="btn btn-primary" onclick="viewExistingTicket(\'' + esc(data.ticketId) + '\')">View My Ticket</button>' +
               '<button class="btn btn-secondary" onclick="location.reload()">Submit Another</button>' +
             '</div>' +
+            existingHtml +
           '</div></div>';
       } catch (err) {
         showAlert('submitAlert', 'error', err.message);
@@ -787,7 +985,12 @@
         return;
       }
 
+      const open = tickets.filter(t => ['open','in_progress','waiting'].includes(t.status)).length;
       $('ticketListCard').innerHTML =
+        '<div style="padding:16px 20px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between">' +
+          '<span style="font-size:14px;font-weight:600">' + tickets.length + ' ticket' + (tickets.length === 1 ? '' : 's') + (open > 0 ? ' <span style="color:var(--brand-accent)">(' + open + ' open)</span>' : '') + '</span>' +
+          '<button class="btn btn-primary" style="padding:6px 14px;font-size:13px" onclick="goToNewRequest()">+ New Request</button>' +
+        '</div>' +
         '<ul class="ticket-list">' +
         tickets.map(t =>
           '<li class="ticket-item" onclick="loadTicketDetail(\'' + esc(t.id) + '\')">' +
@@ -803,6 +1006,12 @@
           '</li>'
         ).join('') +
         '</ul>';
+    }
+
+    function goToNewRequest() {
+      switchTab('submit');
+      // Pre-fill email if we know it
+      if (_lookupEmail && $('email')) $('email').value = _lookupEmail;
     }
 
     /* ─── LOAD SINGLE TICKET ─── */
