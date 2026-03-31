@@ -163,6 +163,70 @@ function timeAgo(d) {
 
 function escHtml(s) { const d = document.createElement('div'); d.textContent = s || ''; return d.innerHTML; }
 
+// Format structured ticket body text into styled HTML
+function formatTicketBody(raw) {
+  if (!raw) return '';
+  const lines = raw.split('\n');
+  let html = '';
+  let inList = false;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+
+    // Section headers:  ═══ HEADER ═══  or  ─── HEADER ───
+    const headerMatch = line.match(/^[═─]{2,}\s*(.+?)\s*[═─]{2,}$/);
+    if (headerMatch) {
+      if (inList) { html += '</ol>'; inList = false; }
+      html += `<div style="margin:20px 0 10px;padding:8px 0;border-bottom:2px solid var(--accent,#c9a96e);">`
+            + `<strong style="font-size:14px;letter-spacing:0.06em;text-transform:uppercase;color:var(--accent,#c9a96e);">${escHtml(headerMatch[1])}</strong></div>`;
+      continue;
+    }
+
+    // Numbered list items:  1. text  2. text
+    const numMatch = line.match(/^(\d+)\.\s+(.+)/);
+    if (numMatch) {
+      if (!inList) { html += '<ol style="margin:8px 0 8px 20px;padding:0;line-height:1.8;">'; inList = true; }
+      html += `<li style="margin-bottom:4px;">${escHtml(numMatch[2])}</li>`;
+      continue;
+    }
+
+    // Close list if we left it
+    if (inList) { html += '</ol>'; inList = false; }
+
+    // Bullet items:  • text  or  - text (at start of line)
+    const bulletMatch = line.match(/^[•\-]\s+(.+)/);
+    if (bulletMatch) {
+      html += `<div style="padding-left:16px;margin:2px 0;">• ${escHtml(bulletMatch[1])}</div>`;
+      continue;
+    }
+
+    // Key: Value pairs (label before first colon, rest is value) — only if key is short
+    const kvMatch = line.match(/^([A-Za-z][A-Za-z ]{1,30}):\s+(.+)/);
+    if (kvMatch && !line.match(/^https?:/i)) {
+      html += `<div style="margin:3px 0;"><strong style="color:var(--text);">${escHtml(kvMatch[1])}:</strong> ${escHtml(kvMatch[2])}</div>`;
+      continue;
+    }
+
+    // Emoji alert lines (🔴, 🟡, ⚠️ etc.)
+    if (/^[\u{1F534}\u{1F7E1}\u{26A0}\u{1F6A8}]/u.test(line.trim())) {
+      html += `<div style="margin:8px 0;padding:8px 12px;background:rgba(255,200,50,0.1);border-left:3px solid #eab308;border-radius:4px;font-weight:600;">${escHtml(line)}</div>`;
+      continue;
+    }
+
+    // Blank lines → spacing
+    if (line.trim() === '') {
+      html += '<div style="height:8px;"></div>';
+      continue;
+    }
+
+    // Default: regular text line
+    html += `<div style="margin:2px 0;">${escHtml(line)}</div>`;
+  }
+
+  if (inList) html += '</ol>';
+  return html;
+}
+
 function priorityBadge(p) {
   const m = { CRITICAL: 'critical', URGENT: 'urgent', REORDER: 'reorder', WATCH: 'watch', OK: 'ok' };
   return `<span class="badge badge-${m[p] || 'ok'}">${p}</span>`;
@@ -1990,11 +2054,11 @@ async function loadTicketDetail(ticketId) {
                         <strong style="font-size:13px;color:${isInternal ? 'var(--accent)' : 'var(--text)'}">${escHtml(msg.from || msg.fromEmail || 'Unknown')}</strong>
                         <span style="font-size:11px;color:var(--text-muted)">${msg.date ? fmtDateTime(msg.date) : ''}</span>
                       </div>
-                      <div style="font-size:13px;color:var(--text-dim);white-space:pre-wrap;line-height:1.6;max-height:300px;overflow-y:auto;">${escHtml(msg.body || '')}</div>
+                      <div style="font-size:13px;color:var(--text-dim);line-height:1.6;max-height:300px;overflow-y:auto;">${formatTicketBody(msg.body || '')}</div>
                     </div>`;
                   }).join('')}
                 </div>`
-              : (ticket.description ? `<div style="padding:16px 20px;border-bottom:1px solid var(--border);color:var(--text-dim);font-size:13px;white-space:pre-wrap;line-height:1.6">${escHtml(ticket.description)}</div>` : '')
+              : (ticket.description ? `<div style="padding:16px 20px;border-bottom:1px solid var(--border);color:var(--text-dim);font-size:13px;line-height:1.6">${formatTicketBody(ticket.description)}</div>` : '')
             }
             ${ticket.orderName ? `<div style="padding:10px 20px;border-bottom:1px solid var(--border);font-size:13px;color:var(--text-dim)">🧾 Linked Order: <strong>${escHtml(ticket.orderName)}</strong></div>` : ''}
             <div style="padding:16px 20px;border-bottom:1px solid var(--border);">

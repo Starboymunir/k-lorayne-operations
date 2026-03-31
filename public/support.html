@@ -315,7 +315,6 @@
       font-size: 14px;
       color: var(--text-dim);
       line-height: 1.6;
-      white-space: pre-wrap;
     }
 
     /* ─── CONVERSATION THREAD ─── */
@@ -354,7 +353,6 @@
       font-size: 14px;
       color: var(--text-dim);
       line-height: 1.6;
-      white-space: pre-wrap;
     }
     .thread-msg .msg-badge {
       display: inline-block;
@@ -726,6 +724,43 @@
       return d.innerHTML;
     };
 
+    function formatTicketBody(raw) {
+      if (!raw) return '';
+      var lines = raw.split('\n');
+      var html = '';
+      var inList = false;
+      for (var i = 0; i < lines.length; i++) {
+        var line = lines[i];
+        var headerMatch = line.match(/^[\u2550\u2500]{2,}\s*(.+?)\s*[\u2550\u2500]{2,}$/);
+        if (headerMatch) {
+          if (inList) { html += '</ol>'; inList = false; }
+          html += '<div style="margin:16px 0 8px;padding:6px 0;border-bottom:2px solid var(--brand-accent,#c9a96e);"><strong style="font-size:13px;letter-spacing:0.06em;text-transform:uppercase;color:var(--brand-accent,#c9a96e);">' + esc(headerMatch[1]) + '</strong></div>';
+          continue;
+        }
+        var numMatch = line.match(/^(\d+)\.\s+(.+)/);
+        if (numMatch) {
+          if (!inList) { html += '<ol style="margin:6px 0 6px 20px;padding:0;line-height:1.7;">'; inList = true; }
+          html += '<li style="margin-bottom:3px;">' + esc(numMatch[2]) + '</li>';
+          continue;
+        }
+        if (inList) { html += '</ol>'; inList = false; }
+        var bulletMatch = line.match(/^[\u2022\-]\s+(.+)/);
+        if (bulletMatch) {
+          html += '<div style="padding-left:14px;margin:2px 0;">\u2022 ' + esc(bulletMatch[1]) + '</div>';
+          continue;
+        }
+        var kvMatch = line.match(/^([A-Za-z][A-Za-z ]{1,30}):\s+(.+)/);
+        if (kvMatch && !line.match(/^https?:/i)) {
+          html += '<div style="margin:2px 0;"><strong>' + esc(kvMatch[1]) + ':</strong> ' + esc(kvMatch[2]) + '</div>';
+          continue;
+        }
+        if (line.trim() === '') { html += '<div style="height:6px;"></div>'; continue; }
+        html += '<div style="margin:2px 0;">' + esc(line) + '</div>';
+      }
+      if (inList) html += '</ol>';
+      return html;
+    }
+
     function showAlert(id, type, msg) {
       const el = $(id);
       el.className = 'alert alert-' + type + ' show';
@@ -1056,7 +1091,7 @@
 
         // Original description
         (ticket.description
-          ? '<div class="ticket-description">' + esc(ticket.description) + '</div>'
+          ? '<div class="ticket-description">' + formatTicketBody(ticket.description) + '</div>'
           : '') +
 
         // Conversation thread
@@ -1072,7 +1107,7 @@
                     '</span>' +
                     '<span class="thread-msg-time">' + fmtDateTime(m.createdAt) + '</span>' +
                   '</div>' +
-                  '<div class="thread-msg-body">' + esc(m.text) + '</div>' +
+                  '<div class="thread-msg-body">' + formatTicketBody(m.text) + '</div>' +
                 '</div>';
               }).join('') +
             '</div>'
