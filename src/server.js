@@ -2389,6 +2389,23 @@ setInterval(() => {
   }
 }, 600000);
 
+// ─── CORS for public ticket API (Shopify storefront → CRM) ───
+app.use('/api/public', (req, res, next) => {
+  const allowedOrigins = [
+    'https://kloapparel.com',
+    'https://www.kloapparel.com',
+    'https://k-lorayne-apparel.myshopify.com',
+  ];
+  const origin = req.headers.origin;
+  if (allowedOrigins.includes(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+  }
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  if (req.method === 'OPTIONS') return res.sendStatus(204);
+  next();
+});
+
 // Serve the support page
 app.get('/support', (req, res) => {
   res.sendFile(join(__dirname, '..', 'public', 'support.html'));
